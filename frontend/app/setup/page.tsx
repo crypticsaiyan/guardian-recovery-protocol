@@ -12,10 +12,10 @@ gsap.registerPlugin(ScrollTrigger)
 export default function SetupPage() {
   const sectionRef = useRef<HTMLElement>(null)
   const formRef = useRef<HTMLDivElement>(null)
-  const [guardians, setGuardians] = useState(["", "", ""])
-  const [threshold, setThreshold] = useState("3")
+  const [guardians, setGuardians] = useState(["", ""])
   const [isConnected, setIsConnected] = useState(false)
   const [account, setAccount] = useState("")
+  const minGuardians = 2
 
   useEffect(() => {
     if (!sectionRef.current || !formRef.current) return
@@ -38,6 +38,17 @@ export default function SetupPage() {
     setGuardians(newGuardians)
   }
 
+  const handleAddGuardian = () => {
+    setGuardians([...guardians, ""])
+  }
+
+  const handleRemoveGuardian = (index: number) => {
+    if (guardians.length > minGuardians) {
+      const newGuardians = guardians.filter((_, i) => i !== index)
+      setGuardians(newGuardians)
+    }
+  }
+
   const handleConnectWallet = async () => {
     // TODO: Implement Casper Wallet connection
     setIsConnected(true)
@@ -45,6 +56,8 @@ export default function SetupPage() {
   }
 
   const handleSaveGuardians = async () => {
+    // Threshold automatically equals number of guardians (all must approve)
+    const threshold = guardians.length
     // TODO: Implement smart contract call
     console.log("Saving guardians:", guardians, "Threshold:", threshold)
   }
@@ -83,7 +96,7 @@ export default function SetupPage() {
               SETUP GUARDIANS
             </h1>
             <p className="mt-6 max-w-2xl font-mono text-sm text-muted-foreground leading-relaxed">
-              Enter 3 guardian public keys. You will sign this transaction with your PRIMARY key (weight 3).
+              Enter guardian public keys (minimum 2). You will sign this transaction with your PRIMARY key (weight 3).
               Guardians will be stored on-chain.
             </p>
           </div>
@@ -142,9 +155,19 @@ export default function SetupPage() {
                   {/* Guardian Inputs */}
                   {guardians.map((guardian, index) => (
                     <div key={index} className="space-y-2">
-                      <label className="font-mono text-[9px] uppercase tracking-[0.3em] text-muted-foreground">
-                        Guardian {index + 1} Public Key
-                      </label>
+                      <div className="flex items-center justify-between">
+                        <label className="font-mono text-[9px] uppercase tracking-[0.3em] text-muted-foreground">
+                          Guardian {index + 1} Public Key
+                        </label>
+                        {guardians.length > minGuardians && (
+                          <button
+                            onClick={() => handleRemoveGuardian(index)}
+                            className="font-mono text-[9px] uppercase tracking-[0.3em] text-muted-foreground hover:text-accent transition-colors"
+                          >
+                            Remove
+                          </button>
+                        )}
+                      </div>
                       <input
                         type="text"
                         value={guardian}
@@ -155,21 +178,17 @@ export default function SetupPage() {
                     </div>
                   ))}
 
-                  {/* Threshold */}
-                  <div className="space-y-2 pt-4">
-                    <label className="font-mono text-[9px] uppercase tracking-[0.3em] text-muted-foreground">
-                      Threshold (Signatures Required)
-                    </label>
-                    <input
-                      type="number"
-                      value={threshold}
-                      onChange={(e) => setThreshold(e.target.value)}
-                      min="1"
-                      max="3"
-                      className="w-full bg-transparent border border-border/30 px-4 py-3 font-mono text-sm text-foreground focus:border-accent focus:outline-none transition-colors"
-                    />
-                    <p className="font-mono text-[10px] text-muted-foreground leading-relaxed">
-                      Need {threshold} guardian approval(s) to execute recovery
+                  {/* Add Guardian Button */}
+                  <div className="pt-2">
+                    <button
+                      onClick={handleAddGuardian}
+                      className="inline-flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.3em] text-muted-foreground hover:text-accent transition-colors"
+                    >
+                      <span className="text-accent">+</span>
+                      Add Guardian
+                    </button>
+                    <p className="mt-2 font-mono text-[10px] text-muted-foreground leading-relaxed">
+                      All guardians must approve for recovery (threshold = {guardians.length})
                     </p>
                   </div>
                 </div>
