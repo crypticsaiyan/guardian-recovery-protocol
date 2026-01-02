@@ -126,7 +126,12 @@ router.post('/submit', async (req: Request, res: Response) => {
             } as ApiResponse);
         }
 
+        console.log('=== Submit Deploy Request ===');
+        console.log('Deploy JSON type:', typeof deployJson);
+        console.log('Deploy JSON length:', deployJson.length);
+
         const result = await sessionService.submitSignedDeploy(deployJson);
+        console.log('Submit result:', result);
 
         res.json({
             success: result.success,
@@ -134,8 +139,10 @@ router.post('/submit', async (req: Request, res: Response) => {
                 deployHash: result.deployHash,
                 message: result.message,
             },
+            error: result.success ? undefined : result.message,
         } as ApiResponse);
     } catch (error) {
+        console.error('Submit deploy error:', error);
         res.status(500).json({
             success: false,
             error: `Failed to submit deploy: ${error}`,

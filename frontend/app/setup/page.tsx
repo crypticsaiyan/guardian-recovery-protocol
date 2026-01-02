@@ -14,7 +14,7 @@ import {
   isCasperWalletInstalled,
   getProvider
 } from "@/lib/casper-wallet"
-import { registerGuardians, submitDeploy, getDeployStatus } from "@/lib/api"
+import { registerGuardians, submitDeploy, getDeployStatus, buildAddKeyDeploy, buildUpdateThresholdsDeploy } from "@/lib/api"
 import { isValidCasperAddress, getAddressValidationError } from "@/lib/validation"
 import gsap from "gsap"
 import { ScrollTrigger } from "gsap/ScrollTrigger"
@@ -38,6 +38,11 @@ export default function SetupPage() {
   const [saveSuccess, setSaveSuccess] = useState(false)
   const [deployHash, setDeployHash] = useState<string | null>(null)
   const [deployStatus, setDeployStatus] = useState<"pending" | "success" | "failed" | null>(null)
+
+  // Multi-step setup tracking
+  const [setupStep, setSetupStep] = useState<"idle" | "registering" | "adding-keys" | "updating-thresholds" | "complete">("idle")
+  const [currentStepIndex, setCurrentStepIndex] = useState(0)
+  const [stepMessages, setStepMessages] = useState<string[]>([])
 
   // Check if wallet is already connected on mount
   useEffect(() => {
@@ -108,7 +113,7 @@ export default function SetupPage() {
     const newGuardians = [...guardians]
     newGuardians[index] = value
     setGuardians(newGuardians)
-    
+
     // Validate on change
     const newErrors = [...guardianErrors]
     if (value.trim()) {
@@ -175,6 +180,72 @@ export default function SetupPage() {
     }
   }
 
+  /**
+   * Helper function to sign and submit a deploy
+   */
+  const signAndSubmitDeploy = async (deployJson: any, stepName: string): Promise<string> => {
+    const provider = getProvider()
+    if (!provider) {
+      throw new Error("Casper Wallet not available")
+    }
+
+    // Ensure deployJson is a string for the wallet
+    const deployString = typeof deployJson === 'string' ? deployJson : JSON.stringify(deployJson);
+
+    // Sign the deploy using Casper Wallet
+    const response = await provider.sign(deployString, account)
+    console.log(`${stepName} sign response:`, response);
+
+    if (response.cancelled) {
+      throw new Error(`${stepName} cancelled by user`)
+    }
+
+    const signatureHex = response.signatureHex;
+    if (!signatureHex) {
+      throw new Error(`Failed to get signature from wallet for ${stepName}`)
+    }
+
+    // Reconstruct the deploy from the JSON
+    const originalDeployJson = typeof deployJson === 'string' ? JSON.parse(deployJson) : deployJson;
+    const deploy = DeployUtil.deployFromJson(originalDeployJson).unwrap();
+
+    // Get the public key to determine the signature algorithm
+    const publicKey = CLPublicKey.fromHex(account);
+
+    // Casper Wallet returns the signature without the algorithm tag
+    // We need to prepend the tag: 01 for Ed25519, 02 for Secp256k1
+    const algorithmTag = publicKey.isEd25519() ? '01' : '02';
+    const fullSignature = algorithmTag + signatureHex;
+
+    // Create a proper approval with hex strings
+    const approval = new DeployUtil.Approval();
+    approval.signer = publicKey.toHex(); // Use public key hex, not account hash
+    approval.signature = fullSignature; // Keep as hex string
+
+    // Add the approval to the deploy
+    deploy.approvals.push(approval);
+
+    // Submit signed deploy to the network
+    const signedDeployJson = DeployUtil.deployToJson(deploy);
+    console.log(`${stepName} - Deploy approvals count:`, deploy.approvals.length);
+    console.log(`${stepName} - Deploy JSON structure:`, signedDeployJson);
+
+    // DeployUtil.deployToJson already returns {deploy: ...} format
+    const submitResult = await submitDeploy(JSON.stringify(signedDeployJson))
+    console.log(`${stepName} submit result:`, JSON.stringify(submitResult, null, 2));
+
+    if (!submitResult.success) {
+      // Try multiple paths to get the error message
+      const errorMsg = submitResult.error
+        || (submitResult.data && 'message' in submitResult.data ? submitResult.data.message : null)
+        || `Failed to submit ${stepName}`;
+      console.error(`${stepName} submit error details:`, errorMsg);
+      throw new Error(errorMsg)
+    }
+
+    return submitResult.data?.deployHash || ''
+  }
+
   const handleSaveGuardians = async () => {
     // Validate guardians
     const validGuardians = guardians.filter(g => g.trim())
@@ -182,7 +253,7 @@ export default function SetupPage() {
       setSaveError(`At least ${minGuardians} protectors are required`)
       return
     }
-    
+
     // Check all guardians are valid addresses
     const invalidGuardians = validGuardians.filter(g => !isValidCasperAddress(g))
     if (invalidGuardians.length > 0) {
@@ -195,9 +266,21 @@ export default function SetupPage() {
     setSaveSuccess(false)
     setDeployHash(null)
     setDeployStatus(null)
+    setSetupStep("registering")
+    setCurrentStepIndex(0)
+    setStepMessages([])
 
     try {
-      // Step 1: Get unsigned deploy from backend
+      const messages: string[] = []
+
+
+      // ============================================================================
+      // STEP 0: Register guardians in contract (social consensus layer)
+      // ============================================================================
+      setCurrentStepIndex(1)
+      messages.push("Step 1/3: Registering guardians in contract...")
+      setStepMessages([...messages])
+
       const threshold = validGuardians.length // All guardians must approve
       const registerResult = await registerGuardians(account, validGuardians, threshold)
 
@@ -205,68 +288,88 @@ export default function SetupPage() {
         throw new Error(registerResult.error || "Failed to build registration deploy")
       }
 
-      // Step 2: Sign the deploy with Casper Wallet
-      const provider = getProvider()
-      if (!provider) {
-        throw new Error("Casper Wallet not available")
+      const registerHash = await signAndSubmitDeploy(registerResult.data.deployJson, "Register guardians")
+      messages.push(`✓ Guardians registered (${registerHash.substring(0, 16)}...)`)
+      setStepMessages([...messages])
+
+      // Wait for deploy to be processed
+      await new Promise(resolve => setTimeout(resolve, 2000))
+
+      // ============================================================================
+      // STEP 1a: Add each guardian as associated key (cryptographic power)
+      // ============================================================================
+      setSetupStep("adding-keys")
+      setCurrentStepIndex(2)
+      messages.push("Step 2/3: Adding guardian keys to your account...")
+      setStepMessages([...messages])
+
+      for (let i = 0; i < validGuardians.length; i++) {
+        const guardianKey = validGuardians[i]
+        messages.push(`  Adding guardian ${i + 1}/${validGuardians.length}...`)
+        setStepMessages([...messages])
+
+        const addKeyResult = await buildAddKeyDeploy(account, guardianKey, 1)
+
+        if (!addKeyResult.success || !addKeyResult.data?.deployJson) {
+          throw new Error(addKeyResult.error || `Failed to build add key deploy for guardian ${i + 1}`)
+        }
+
+        const addKeyHash = await signAndSubmitDeploy(addKeyResult.data.deployJson, `Add guardian ${i + 1}`)
+        messages[messages.length - 1] = `  ✓ Guardian ${i + 1} added (${addKeyHash.substring(0, 16)}...)`
+        setStepMessages([...messages])
+
+        // Wait between deploys to avoid nonce issues
+        if (i < validGuardians.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 2000))
+        }
       }
 
-      // Parse the deploy JSON
-      const deployJson = registerResult.data.deployJson
+      // Wait before updating thresholds
+      await new Promise(resolve => setTimeout(resolve, 2000))
 
-      // Ensure deployJson is a string for the wallet
-      const deployString = typeof deployJson === 'string' ? deployJson : JSON.stringify(deployJson);
+      // ============================================================================
+      // STEP 1b: Update thresholds (enable multi-sig requirement)
+      // ============================================================================
+      setSetupStep("updating-thresholds")
+      setCurrentStepIndex(3)
+      messages.push("Step 3/3: Updating account thresholds...")
+      setStepMessages([...messages])
 
-      // Sign the deploy using Casper Wallet
-      // Note: The method is 'sign' in the wallet provider, not 'signDeploy'
-      const response = await provider.sign(deployString, account)
-      console.log("Sign response:", response);
+      // Set key_management_threshold = 2 (requires 2 signatures to change keys)
+      // Set deployment_threshold = 1 (user can still deploy alone)
+      const updateThresholdsResult = await buildUpdateThresholdsDeploy(
+        account,
+        1, // deployment threshold
+        2  // key management threshold - THIS IS THE KEY SECURITY SETTING
+      )
 
-      if (response.cancelled) {
-        throw new Error("Sign request cancelled by user")
+      if (!updateThresholdsResult.success || !updateThresholdsResult.data?.deployJson) {
+        throw new Error(updateThresholdsResult.error || "Failed to build update thresholds deploy")
       }
 
-      const signatureHex = response.signatureHex;
-      if (!signatureHex) {
-        throw new Error("Failed to get signature from wallet")
-      }
+      const thresholdsHash = await signAndSubmitDeploy(
+        updateThresholdsResult.data.deployJson,
+        "Update thresholds"
+      )
+      messages.push(`✓ Thresholds updated (${thresholdsHash.substring(0, 16)}...)`)
+      setStepMessages([...messages])
 
-      // Reconstruct the deploy from the JSON
-      // We use the original object, not the string
-      const originalDeployJson = typeof deployJson === 'string' ? JSON.parse(deployJson) : deployJson;
-      const deploy = DeployUtil.deployFromJson(originalDeployJson).unwrap();
+      // ============================================================================
+      // COMPLETE!
+      // ============================================================================
+      setSetupStep("complete")
+      setDeployHash(thresholdsHash)
+      setDeployStatus("success")
+      setSaveSuccess(true)
+      messages.push("🎉 Setup complete! Guardians now have recovery power.")
+      setStepMessages([...messages])
 
-      // Construct the signature with the correct tag
-      // Casper Wallet returns raw signature bytes (hex)
-      // We need to prepend the tag based on the key type (01 for Ed25519, 02 for Secp256k1)
-      const publicKey = CLPublicKey.fromHex(account);
-      const tag = publicKey.tag; // 1 or 2
-      const tagHex = tag.toString(16).padStart(2, '0'); // "01" or "02"
-      const signatureWithTag = tagHex + signatureHex;
-
-      // Add the approval to the deploy
-      const approval = new DeployUtil.Approval();
-      approval.signer = account;
-      approval.signature = signatureWithTag;
-      deploy.approvals.push(approval);
-
-      // Step 3: Submit signed deploy to the network
-      const signedDeployJson = DeployUtil.deployToJson(deploy);
-      const submitResult = await submitDeploy(JSON.stringify(signedDeployJson))
-      console.log("Submit result:", submitResult);
-
-      if (!submitResult.success) {
-        throw new Error(submitResult.error || "Failed to submit deploy")
-      }
-
-      // Store deploy hash and start polling
-      setDeployHash(submitResult.data?.deployHash || null)
-      setDeployStatus("pending")
 
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "Failed to save guardians"
       setSaveError(errorMessage)
       console.error("Save guardians error:", error)
+      setSetupStep("idle")
     } finally {
       setIsSaving(false)
     }
@@ -407,9 +510,8 @@ export default function SetupPage() {
                         value={guardian}
                         onChange={(e) => handleGuardianChange(index, e.target.value)}
                         placeholder="Enter protector public key..."
-                        className={`w-full bg-transparent border px-4 py-3 font-mono text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-accent focus:outline-none transition-colors ${
-                          guardianErrors[index] ? "border-red-500/50" : "border-border/30"
-                        }`}
+                        className={`w-full bg-transparent border px-4 py-3 font-mono text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-accent focus:outline-none transition-colors ${guardianErrors[index] ? "border-red-500/50" : "border-border/30"
+                          }`}
                       />
                       {guardianErrors[index] && (
                         <p className="font-mono text-xs text-red-500 mt-1">
@@ -445,14 +547,37 @@ export default function SetupPage() {
                     </div>
                   )}
 
+                  {/* Progress Display */}
+                  {isSaving && stepMessages.length > 0 && (
+                    <div className="mb-6 p-4 border border-accent/30 bg-accent/5">
+                      <p className="font-mono text-xs text-accent mb-3">
+                        ⚙️ Setting up guardian recovery...
+                      </p>
+                      <div className="space-y-1">
+                        {stepMessages.map((msg, idx) => (
+                          <p key={idx} className="font-mono text-[10px] text-foreground/80">
+                            {msg}
+                          </p>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
                   {/* Success Display */}
                   {saveSuccess && deployHash && (
                     <div className="mb-6 p-4 border border-green-500/30 bg-green-500/5">
                       <p className="font-mono text-xs text-green-500 mb-2">
-                        ✓ Protectors registered successfully!
+                        ✓ Guardian setup complete!
                       </p>
+                      <div className="space-y-1 mb-3">
+                        {stepMessages.map((msg, idx) => (
+                          <p key={idx} className="font-mono text-[10px] text-foreground/60">
+                            {msg}
+                          </p>
+                        ))}
+                      </div>
                       <p className="font-mono text-[10px] text-muted-foreground break-all">
-                        Deploy Hash: {deployHash}
+                        Final Deploy Hash: {deployHash}
                       </p>
                     </div>
                   )}
@@ -475,7 +600,7 @@ export default function SetupPage() {
                     className="group inline-flex items-center gap-3 border border-foreground/20 px-8 py-4 font-mono text-xs uppercase tracking-widest text-foreground hover:border-accent hover:text-accent transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:border-foreground/20 disabled:hover:text-foreground"
                   >
                     <ScrambleTextOnHover
-                      text={isSaving ? "Signing..." : saveSuccess ? "Saved ✓" : "Save Protectors"}
+                      text={isSaving ? "Processing..." : saveSuccess ? "Setup Complete ✓" : "Setup Guardians"}
                       as="span"
                       duration={0.6}
                     />
@@ -485,10 +610,10 @@ export default function SetupPage() {
                   </button>
                   <p className="mt-4 font-mono text-xs text-muted-foreground leading-relaxed">
                     {isSaving
-                      ? "Please sign the transaction in Casper Wallet..."
+                      ? `Step ${currentStepIndex}/3: Please approve each transaction in Casper Wallet...`
                       : saveSuccess
-                        ? "Your guardians are now registered on-chain"
-                        : "Casper Wallet will pop up for signature"}
+                        ? "Guardians now have cryptographic power to recover your account"
+                        : "This will execute 3 steps: register guardians, add keys, update thresholds"}
                   </p>
                 </div>
               </div>
@@ -502,21 +627,24 @@ export default function SetupPage() {
               <ul className="space-y-3">
                 <li className="font-mono text-sm text-foreground/80 flex items-start gap-3">
                   <span className="text-accent">01</span>
-                  <span>Casper Wallet will request your signature</span>
+                  <span>Register guardians in recovery contract</span>
                 </li>
                 <li className="font-mono text-sm text-foreground/80 flex items-start gap-3">
                   <span className="text-accent">02</span>
-                  <span>You sign with your PRIMARY key (weight 3)</span>
+                  <span>Add each guardian as associated key (weight=1)</span>
                 </li>
                 <li className="font-mono text-sm text-foreground/80 flex items-start gap-3">
                   <span className="text-accent">03</span>
-                  <span>Guardians are stored on-chain</span>
+                  <span>Update key_management_threshold to 2</span>
                 </li>
                 <li className="font-mono text-sm text-foreground/80 flex items-start gap-3">
                   <span className="text-accent">04</span>
-                  <span>Friends receive notification</span>
+                  <span>Guardians gain cryptographic power to recover your account</span>
                 </li>
               </ul>
+              <p className="mt-4 font-mono text-xs text-muted-foreground leading-relaxed">
+                You'll sign multiple transactions. This gives guardians REAL power to help you recover if you lose your key.
+              </p>
             </div>
           </div>
         </div>
