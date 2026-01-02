@@ -4,6 +4,17 @@ import { useState, useRef, useEffect } from "react"
 import { AnimatedNoise } from "@/components/animated-noise"
 import { ScrambleTextOnHover } from "@/components/scramble-text"
 import { BitmapChevron } from "@/components/bitmap-chevron"
+import { DeployUtil } from "casper-js-sdk"
+import {
+  connectWallet,
+  disconnectWallet,
+  isWalletConnected,
+  getActivePublicKey,
+  formatPublicKey,
+  isCasperWalletInstalled,
+  getProvider
+} from "@/lib/casper-wallet"
+import { initiateRecovery, submitDeploy, getDeployStatus } from "@/lib/api"
 import gsap from "gsap"
 import { ScrollTrigger } from "gsap/ScrollTrigger"
 
@@ -16,7 +27,62 @@ export default function RecoveryPage() {
   const [newPublicKey, setNewPublicKey] = useState("")
   const [isConnected, setIsConnected] = useState(false)
   const [guardianKey, setGuardianKey] = useState("")
-  const [recoveryStatus, setRecoveryStatus] = useState<"idle" | "pending" | "submitted">("idle")
+  const [isConnecting, setIsConnecting] = useState(false)
+  const [connectionError, setConnectionError] = useState<string | null>(null)
+  const [recoveryStatus, setRecoveryStatus] = useState<"idle" | "pending" | "submitted" | "confirmed">("idle")
+
+  // Recovery state
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [submitError, setSubmitError] = useState<string | null>(null)
+  const [deployHash, setDeployHash] = useState<string | null>(null)
+  const [recoveryId, setRecoveryId] = useState<string | null>(null)
+
+  // Check wallet connection on mount
+  useEffect(() => {
+    const checkExistingConnection = async () => {
+      try {
+        const connected = await isWalletConnected()
+        if (connected) {
+          const publicKey = await getActivePublicKey()
+          if (publicKey) {
+            setIsConnected(true)
+            setGuardianKey(publicKey)
+          }
+        }
+      } catch (error) {
+        console.error("Error checking wallet connection:", error)
+      }
+    }
+
+    if (typeof window !== 'undefined') {
+      const timer = setTimeout(checkExistingConnection, 500)
+      return () => clearTimeout(timer)
+    }
+  }, [])
+
+  // Poll for deploy status
+  useEffect(() => {
+    if (!deployHash || recoveryStatus === "confirmed") return
+
+    const pollStatus = async () => {
+      try {
+        const result = await getDeployStatus(deployHash)
+        if (result.success && result.data) {
+          if (result.data.status === "success") {
+            setRecoveryStatus("confirmed")
+          } else if (result.data.status === "failed") {
+            setSubmitError("Recovery deploy failed on-chain")
+            setRecoveryStatus("idle")
+          }
+        }
+      } catch (error) {
+        console.error("Error polling deploy status:", error)
+      }
+    }
+
+    const interval = setInterval(pollStatus, 5000)
+    return () => clearInterval(interval)
+  }, [deployHash, recoveryStatus])
 
   useEffect(() => {
     if (!sectionRef.current || !formRef.current) return
@@ -34,15 +100,102 @@ export default function RecoveryPage() {
   }, [])
 
   const handleConnectGuardianKey = async () => {
-    // TODO: Implement Casper Wallet connection with guardian key
-    setIsConnected(true)
-    setGuardianKey("guardian1@hash...")
+    setIsConnecting(true)
+    setConnectionError(null)
+
+    try {
+      if (!isCasperWalletInstalled()) {
+        setConnectionError("Casper Wallet extension is not installed. Please install it from casperwallet.io")
+        window.open("https://www.casperwallet.io/", "_blank")
+        return
+      }
+
+      const publicKey = await connectWallet()
+
+      if (publicKey) {
+        setIsConnected(true)
+        setGuardianKey(publicKey)
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "Failed to connect wallet"
+      setConnectionError(errorMessage)
+      console.error("Wallet connection error:", error)
+    } finally {
+      setIsConnecting(false)
+    }
+  }
+
+  const handleDisconnect = async () => {
+    try {
+      const disconnected = await disconnectWallet()
+      if (disconnected) {
+        setIsConnected(false)
+        setGuardianKey("")
+        setConnectionError(null)
+      }
+    } catch (error) {
+      console.error("Disconnect error:", error)
+    }
   }
 
   const handleStartRecovery = async () => {
-    // TODO: Implement smart contract call for start_recovery
-    setRecoveryStatus("submitted")
-    console.log("Starting recovery for:", accountAddress, "New key:", newPublicKey)
+    if (!accountAddress.trim() || !newPublicKey.trim()) {
+      setSubmitError("Please fill in all fields")
+      return
+    }
+
+    setIsSubmitting(true)
+    setSubmitError(null)
+    setRecoveryStatus("pending")
+
+    try {
+      // Step 1: Get unsigned deploy from backend
+      const initiateResult = await initiateRecovery(
+        guardianKey,
+        accountAddress.trim(),
+        newPublicKey.trim()
+      )
+
+      if (!initiateResult.success || !initiateResult.data?.deployJson) {
+        throw new Error(initiateResult.error || "Failed to build recovery deploy")
+      }
+
+      // Step 2: Sign the deploy with Casper Wallet
+      const provider = getProvider()
+      if (!provider) {
+        throw new Error("Casper Wallet not available")
+      }
+
+      const unsignedDeploy = DeployUtil.deployFromJson(initiateResult.data.deployJson).unwrap()
+      const unsignedDeployJson = DeployUtil.deployToJson(unsignedDeploy)
+
+      const signedJson = await provider.signDeploy(unsignedDeployJson, guardianKey)
+      const signedDeploy = DeployUtil.deployFromJson(signedJson).unwrap()
+
+      if (!signedDeploy) {
+        throw new Error("Failed to sign deploy")
+      }
+
+      // Step 3: Submit signed deploy
+      const submitResult = await submitDeploy(JSON.stringify(DeployUtil.deployToJson(signedDeploy)))
+
+      if (!submitResult.success) {
+        throw new Error(submitResult.error || "Failed to submit deploy")
+      }
+
+      // Store deploy hash and update status
+      setDeployHash(submitResult.data?.deployHash || null)
+      setRecoveryId(submitResult.data?.deployHash || null) // Using deploy hash as recovery ID for now
+      setRecoveryStatus("submitted")
+
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "Failed to start recovery"
+      setSubmitError(errorMessage)
+      setRecoveryStatus("idle")
+      console.error("Recovery error:", error)
+    } finally {
+      setIsSubmitting(false)
+    }
   }
 
   return (
@@ -94,25 +247,49 @@ export default function RecoveryPage() {
                     Guardian Key
                   </h3>
                   {isConnected ? (
-                    <p className="font-mono text-sm text-accent">
-                      Connected: {guardianKey}
-                    </p>
+                    <div>
+                      <p className="font-mono text-sm text-accent">
+                        Connected: {formatPublicKey(guardianKey)}
+                      </p>
+                      <p className="font-mono text-[10px] text-muted-foreground mt-1 break-all max-w-md">
+                        {guardianKey}
+                      </p>
+                    </div>
                   ) : (
                     <p className="font-mono text-sm text-muted-foreground">
-                      Not connected
+                      {isConnecting ? "Connecting..." : "Not connected"}
                     </p>
                   )}
                 </div>
-                {!isConnected && (
-                  <button
-                    onClick={handleConnectGuardianKey}
-                    className="group inline-flex items-center gap-3 border border-foreground/20 px-6 py-3 font-mono text-xs uppercase tracking-widest text-foreground hover:border-accent hover:text-accent transition-all duration-200"
-                  >
-                    <ScrambleTextOnHover text="Connect Guardian Key" as="span" duration={0.6} />
-                    <BitmapChevron className="transition-transform duration-[400ms] ease-in-out group-hover:rotate-45" />
-                  </button>
-                )}
+                <div className="flex items-center gap-3">
+                  {isConnected ? (
+                    <button
+                      onClick={handleDisconnect}
+                      className="group inline-flex items-center gap-3 border border-foreground/20 px-6 py-3 font-mono text-xs uppercase tracking-widest text-foreground hover:border-red-500 hover:text-red-500 transition-all duration-200"
+                    >
+                      <ScrambleTextOnHover text="Disconnect" as="span" duration={0.6} />
+                    </button>
+                  ) : (
+                    <button
+                      onClick={handleConnectGuardianKey}
+                      disabled={isConnecting}
+                      className="group inline-flex items-center gap-3 border border-foreground/20 px-6 py-3 font-mono text-xs uppercase tracking-widest text-foreground hover:border-accent hover:text-accent transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <ScrambleTextOnHover text={isConnecting ? "Connecting..." : "Connect Guardian Key"} as="span" duration={0.6} />
+                      {!isConnecting && <BitmapChevron className="transition-transform duration-[400ms] ease-in-out group-hover:rotate-45" />}
+                    </button>
+                  )}
+                </div>
               </div>
+
+              {/* Connection Error */}
+              {connectionError && (
+                <div className="mb-6 p-4 border border-red-500/30 bg-red-500/5">
+                  <p className="font-mono text-xs text-red-500">
+                    {connectionError}
+                  </p>
+                </div>
+              )}
 
               {!isConnected && (
                 <div className="pt-6 border-t border-border/30">
@@ -181,26 +358,43 @@ export default function RecoveryPage() {
 
                 {/* Start Recovery Button */}
                 <div className="mt-8 pt-8 border-t border-border/30">
+                  {/* Error Display */}
+                  {submitError && (
+                    <div className="mb-6 p-4 border border-red-500/30 bg-red-500/5">
+                      <p className="font-mono text-xs text-red-500">
+                        {submitError}
+                      </p>
+                    </div>
+                  )}
+
                   <button
                     onClick={handleStartRecovery}
-                    disabled={!accountAddress.trim() || !newPublicKey.trim()}
+                    disabled={!accountAddress.trim() || !newPublicKey.trim() || isSubmitting}
                     className="group inline-flex items-center gap-3 border border-foreground/20 px-8 py-4 font-mono text-xs uppercase tracking-widest text-foreground hover:border-accent hover:text-accent transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:border-foreground/20 disabled:hover:text-foreground"
                   >
-                    <ScrambleTextOnHover text="Start Recovery" as="span" duration={0.6} />
-                    <BitmapChevron className="transition-transform duration-[400ms] ease-in-out group-hover:rotate-45" />
+                    <ScrambleTextOnHover
+                      text={isSubmitting ? "Signing..." : "Start Recovery"}
+                      as="span"
+                      duration={0.6}
+                    />
+                    {!isSubmitting && (
+                      <BitmapChevron className="transition-transform duration-[400ms] ease-in-out group-hover:rotate-45" />
+                    )}
                   </button>
                   <p className="mt-4 font-mono text-xs text-muted-foreground leading-relaxed">
-                    Casper Wallet will pop up for signature
+                    {isSubmitting
+                      ? "Please sign the transaction in Casper Wallet..."
+                      : "Casper Wallet will pop up for signature"}
                   </p>
                 </div>
               </div>
             )}
 
             {/* Recovery Submitted Status */}
-            {recoveryStatus === "submitted" && (
-              <div className="border border-accent/30 bg-accent/5 p-6 md:p-8">
-                <h3 className="font-mono text-xs uppercase tracking-widest text-accent mb-4">
-                  Recovery Initiated ✓
+            {(recoveryStatus === "submitted" || recoveryStatus === "confirmed") && (
+              <div className={`border p-6 md:p-8 ${recoveryStatus === "confirmed" ? "border-green-500/30 bg-green-500/5" : "border-accent/30 bg-accent/5"}`}>
+                <h3 className={`font-mono text-xs uppercase tracking-widest mb-4 ${recoveryStatus === "confirmed" ? "text-green-500" : "text-accent"}`}>
+                  {recoveryStatus === "confirmed" ? "Recovery Confirmed ✓" : "Recovery Initiated ⏳"}
                 </h3>
                 <div className="space-y-4">
                   <div className="grid grid-cols-1 gap-1">
@@ -219,9 +413,21 @@ export default function RecoveryPage() {
                       {newPublicKey}
                     </span>
                   </div>
+                  {deployHash && (
+                    <div className="grid grid-cols-1 gap-1">
+                      <span className="font-mono text-xs uppercase tracking-[0.3em] text-muted-foreground">
+                        Deploy Hash
+                      </span>
+                      <span className="font-mono text-xs text-foreground/80 break-all">
+                        {deployHash}
+                      </span>
+                    </div>
+                  )}
                   <div className="pt-4 border-t border-accent/30">
                     <p className="font-mono text-sm text-foreground/80">
-                      Your guardians have been notified. Waiting for 3 approvals...
+                      {recoveryStatus === "confirmed"
+                        ? "Recovery proposal is now on-chain. Guardians can start approving."
+                        : "Waiting for network confirmation..."}
                     </p>
                   </div>
                 </div>

@@ -4,14 +4,17 @@ import { useState, useRef, useEffect } from "react"
 import { AnimatedNoise } from "@/components/animated-noise"
 import { ScrambleTextOnHover } from "@/components/scramble-text"
 import { BitmapChevron } from "@/components/bitmap-chevron"
+import { DeployUtil } from "casper-js-sdk"
 import {
   connectWallet,
   disconnectWallet,
   isWalletConnected,
   getActivePublicKey,
   formatPublicKey,
-  isCasperWalletInstalled
+  isCasperWalletInstalled,
+  getProvider
 } from "@/lib/casper-wallet"
+import { registerGuardians, submitDeploy, getDeployStatus } from "@/lib/api"
 import gsap from "gsap"
 import { ScrollTrigger } from "gsap/ScrollTrigger"
 
@@ -26,6 +29,13 @@ export default function SetupPage() {
   const [isConnecting, setIsConnecting] = useState(false)
   const [connectionError, setConnectionError] = useState<string | null>(null)
   const minGuardians = 2
+
+  // Guardian registration state
+  const [isSaving, setIsSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
+  const [saveSuccess, setSaveSuccess] = useState(false)
+  const [deployHash, setDeployHash] = useState<string | null>(null)
+  const [deployStatus, setDeployStatus] = useState<"pending" | "success" | "failed" | null>(null)
 
   // Check if wallet is already connected on mount
   useEffect(() => {
@@ -51,6 +61,31 @@ export default function SetupPage() {
       return () => clearTimeout(timer)
     }
   }, [])
+
+  // Poll for deploy status when we have a deploy hash
+  useEffect(() => {
+    if (!deployHash || deployStatus === "success" || deployStatus === "failed") return
+
+    const pollStatus = async () => {
+      try {
+        const result = await getDeployStatus(deployHash)
+        if (result.success && result.data) {
+          if (result.data.status === "success") {
+            setDeployStatus("success")
+            setSaveSuccess(true)
+          } else if (result.data.status === "failed") {
+            setDeployStatus("failed")
+            setSaveError("Deploy failed on-chain")
+          }
+        }
+      } catch (error) {
+        console.error("Error polling deploy status:", error)
+      }
+    }
+
+    const interval = setInterval(pollStatus, 5000)
+    return () => clearInterval(interval)
+  }, [deployHash, deployStatus])
 
   useEffect(() => {
     if (!sectionRef.current || !formRef.current) return
@@ -127,10 +162,62 @@ export default function SetupPage() {
   }
 
   const handleSaveGuardians = async () => {
-    // Threshold automatically equals number of guardians (all must approve)
-    const threshold = guardians.length
-    // TODO: Implement smart contract call
-    console.log("Saving guardians:", guardians, "Threshold:", threshold)
+    // Validate guardians
+    const validGuardians = guardians.filter(g => g.trim())
+    if (validGuardians.length < minGuardians) {
+      setSaveError(`At least ${minGuardians} guardians are required`)
+      return
+    }
+
+    setIsSaving(true)
+    setSaveError(null)
+    setSaveSuccess(false)
+    setDeployHash(null)
+    setDeployStatus(null)
+
+    try {
+      // Step 1: Get unsigned deploy from backend
+      const threshold = validGuardians.length // All guardians must approve
+      const registerResult = await registerGuardians(account, validGuardians, threshold)
+
+      if (!registerResult.success || !registerResult.data?.deployJson) {
+        throw new Error(registerResult.error || "Failed to build registration deploy")
+      }
+
+      // Step 2: Sign the deploy with Casper Wallet
+      const provider = getProvider()
+      if (!provider) {
+        throw new Error("Casper Wallet not available")
+      }
+
+      // Parse the deploy JSON
+      const deployJson = registerResult.data.deployJson
+
+      // Sign the deploy using Casper Wallet
+      const signedDeploy = await provider.signDeploy(deployJson, account)
+
+      if (!signedDeploy) {
+        throw new Error("Failed to sign deploy")
+      }
+
+      // Step 3: Submit signed deploy to the network
+      const submitResult = await submitDeploy(JSON.stringify(signedDeploy.deploy))
+
+      if (!submitResult.success) {
+        throw new Error(submitResult.error || "Failed to submit deploy")
+      }
+
+      // Store deploy hash and start polling
+      setDeployHash(submitResult.data?.deployHash || null)
+      setDeployStatus("pending")
+
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "Failed to save guardians"
+      setSaveError(errorMessage)
+      console.error("Save guardians error:", error)
+    } finally {
+      setIsSaving(false)
+    }
   }
 
   return (
@@ -290,16 +377,59 @@ export default function SetupPage() {
 
                 {/* Save Button */}
                 <div className="mt-8 pt-8 border-t border-border/30">
+                  {/* Error Display */}
+                  {saveError && (
+                    <div className="mb-6 p-4 border border-red-500/30 bg-red-500/5">
+                      <p className="font-mono text-xs text-red-500">
+                        {saveError}
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Success Display */}
+                  {saveSuccess && deployHash && (
+                    <div className="mb-6 p-4 border border-green-500/30 bg-green-500/5">
+                      <p className="font-mono text-xs text-green-500 mb-2">
+                        ✓ Guardians registered successfully!
+                      </p>
+                      <p className="font-mono text-[10px] text-muted-foreground break-all">
+                        Deploy Hash: {deployHash}
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Pending Status */}
+                  {deployStatus === "pending" && deployHash && !saveSuccess && (
+                    <div className="mb-6 p-4 border border-yellow-500/30 bg-yellow-500/5">
+                      <p className="font-mono text-xs text-yellow-500 mb-2">
+                        ⏳ Deploy submitted, waiting for confirmation...
+                      </p>
+                      <p className="font-mono text-[10px] text-muted-foreground break-all">
+                        Deploy Hash: {deployHash}
+                      </p>
+                    </div>
+                  )}
+
                   <button
                     onClick={handleSaveGuardians}
-                    disabled={guardians.some((g) => !g.trim())}
+                    disabled={guardians.some((g) => !g.trim()) || isSaving || saveSuccess}
                     className="group inline-flex items-center gap-3 border border-foreground/20 px-8 py-4 font-mono text-xs uppercase tracking-widest text-foreground hover:border-accent hover:text-accent transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:border-foreground/20 disabled:hover:text-foreground"
                   >
-                    <ScrambleTextOnHover text="Save Guardians" as="span" duration={0.6} />
-                    <BitmapChevron className="transition-transform duration-[400ms] ease-in-out group-hover:rotate-45" />
+                    <ScrambleTextOnHover
+                      text={isSaving ? "Signing..." : saveSuccess ? "Saved ✓" : "Save Guardians"}
+                      as="span"
+                      duration={0.6}
+                    />
+                    {!isSaving && !saveSuccess && (
+                      <BitmapChevron className="transition-transform duration-[400ms] ease-in-out group-hover:rotate-45" />
+                    )}
                   </button>
                   <p className="mt-4 font-mono text-xs text-muted-foreground leading-relaxed">
-                    Casper Wallet will pop up for signature
+                    {isSaving
+                      ? "Please sign the transaction in Casper Wallet..."
+                      : saveSuccess
+                        ? "Your guardians are now registered on-chain"
+                        : "Casper Wallet will pop up for signature"}
                   </p>
                 </div>
               </div>
