@@ -1,0 +1,19 @@
+<svg width="180" height="180" viewBox="0 0 180 180" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Dark background with rounded corners -->
+  <rect width="180" height="180" fill="#141414" rx="40"/>
+  
+  <!-- Shield/Guard icon representing SentinelX -->
+  <path d="M90 35L55 50V85C55 115 70 140 90 147C110 140 125 115 125 85V50L90 35Z" fill="none" stroke="#F97316" stroke-width="8" stroke-linejoin="round"/>
+  
+  <!-- X mark in center -->
+  <path d="M75 75L105 105M105 75L75 105" stroke="#F97316" stroke-width="8" stroke-linecap="round"/>
+  
+  <!-- Accent glow effect -->
+  <path d="M90 35L55 50V85C55 115 70 140 90 147C110 140 125 115 125 85V50L90 35Z" fill="none" stroke="#F97316" stroke-width="2" opacity="0.3" stroke-linejoin="round"/>
+  
+  <!-- Corner accents for tech aesthetic -->
+  <path d="M40 40L40 55M40 40L55 40" stroke="#F97316" stroke-width="2" opacity="0.5" stroke-linecap="round"/>
+  <path d="M140 40L140 55M140 40L125 40" stroke="#F97316" stroke-width="2" opacity="0.5" stroke-linecap="round"/>
+  <path d="M40 140L40 125M40 140L55 140" stroke="#F97316" stroke-width="2" opacity="0.5" stroke-linecap="round"/>
+  <path d="M140 140L140 125M140 140L125 140" stroke="#F97316" stroke-width="2" opacity="0.5" stroke-linecap="round"/>
+</svg>

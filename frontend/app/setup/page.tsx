@@ -14,7 +14,7 @@ import {
   isCasperWalletInstalled,
   getProvider
 } from "@/lib/casper-wallet"
-import { registerGuardians, submitDeploy, getDeployStatus } from "@/lib/api"
+import { registerGuardians, submitDeploy, getDeployStatus, getGuardians, hasGuardians } from "@/lib/api"
 import { isValidCasperAddress, getAddressValidationError } from "@/lib/validation"
 import gsap from "gsap"
 import { ScrollTrigger } from "gsap/ScrollTrigger"
@@ -38,6 +38,127 @@ export default function SetupPage() {
   const [saveSuccess, setSaveSuccess] = useState(false)
   const [deployHash, setDeployHash] = useState<string | null>(null)
   const [deployStatus, setDeployStatus] = useState<"pending" | "success" | "failed" | null>(null)
+  const [registeredGuardians, setRegisteredGuardians] = useState<string[]>([])
+  const [isLoadingGuardians, setIsLoadingGuardians] = useState(false)
+
+  // Load guardians from localStorage when account connects
+  useEffect(() => {
+    if (account) {
+      const storageKey = `guardians_${account}`
+      const stored = localStorage.getItem(storageKey)
+      if (stored) {
+        try {
+          const guardians = JSON.parse(stored)
+          if (Array.isArray(guardians) && guardians.length > 0) {
+            setRegisteredGuardians(guardians)
+            setSaveSuccess(true)
+          }
+        } catch (error) {
+          console.error('Error parsing stored guardians:', error)
+        }
+      }
+    }
+  }, [account])
+
+  // Fetch existing guardians when connected
+  useEffect(() => {
+    const fetchExistingGuardians = async () => {
+      if (!account) return
+      
+      // Check if we already have guardians in localStorage
+      const storageKey = `guardians_${account}`
+      if (localStorage.getItem(storageKey)) {
+        return // Already loaded from localStorage
+      }
+      
+      setIsLoadingGuardians(true)
+      try {
+        // Use hasGuardians to check if guardians are registered
+        // We can't actually fetch the guardian list via deploy result
+        // So we'll just check if they exist
+        const result = await hasGuardians(account, account)
+        if (result.success && result.data?.deployJson) {
+          const provider = await getProvider()
+          if (!provider) {
+            setIsLoadingGuardians(false)
+            return
+          }
+
+          // Parse and sign the deploy
+          const deployJson = result.data.deployJson
+          const deployString = typeof deployJson === 'string' ? deployJson : JSON.stringify(deployJson)
+          
+          const response = await provider.sign(deployString, account)
+          if (response.cancelled) {
+            setIsLoadingGuardians(false)
+            return
+          }
+
+          const signatureHex = response.signatureHex
+          if (!signatureHex) {
+            setIsLoadingGuardians(false)
+            return
+          }
+
+          // Reconstruct and sign the deploy
+          const originalDeployJson = typeof deployJson === 'string' ? JSON.parse(deployJson) : deployJson
+          const deploy = DeployUtil.deployFromJson(originalDeployJson).unwrap()
+
+          const publicKey = CLPublicKey.fromHex(account)
+          const tag = publicKey.tag
+          const tagHex = tag.toString(16).padStart(2, '0')
+          const signatureWithTag = tagHex + signatureHex
+
+          const approval = new DeployUtil.Approval()
+          approval.signer = account
+          approval.signature = signatureWithTag
+          deploy.approvals.push(approval)
+
+          // Submit the signed deploy
+          const signedDeployJson = DeployUtil.deployToJson(deploy)
+          const submitResult = await submitDeploy(JSON.stringify(signedDeployJson))
+          
+          if (submitResult.success && submitResult.data?.deployHash) {
+            // Poll for result - if successful, guardians exist
+            const pollForResult = async (hash: string) => {
+              for (let i = 0; i < 15; i++) {
+                await new Promise(resolve => setTimeout(resolve, 3000))
+                const statusResult = await getDeployStatus(hash)
+                
+                if (statusResult.success && statusResult.data) {
+                  const deployData = statusResult.data
+                  // Check execution_results
+                  if (deployData[1]?.execution_results?.[0]?.result?.Success) {
+                    // Guardians exist - show a message that they're registered
+                    // Since we can't fetch the actual guardian addresses from session WASM,
+                    // we'll just indicate that guardians are already configured
+                    setSaveSuccess(true)
+                    // Set a placeholder to indicate guardians exist but we can't fetch them
+                    setRegisteredGuardians(["Protectors already configured for this account"])
+                    break
+                  } else if (deployData[1]?.execution_results?.[0]?.result?.Failure) {
+                    // No guardians or error
+                    break
+                  }
+                }
+              }
+            }
+
+            await pollForResult(submitResult.data.deployHash)
+          }
+        }
+      } catch (error) {
+        console.error("Error checking guardians:", error)
+        // Silently fail - user might not have guardians registered yet
+      } finally {
+        setIsLoadingGuardians(false)
+      }
+    }
+
+    if (account) {
+      fetchExistingGuardians()
+    }
+  }, [account])
 
   // Check if wallet is already connected on mount
   useEffect(() => {
@@ -112,7 +233,14 @@ export default function SetupPage() {
     // Validate on change
     const newErrors = [...guardianErrors]
     if (value.trim()) {
-      newErrors[index] = getAddressValidationError(value)
+      const addressError = getAddressValidationError(value)
+      if (addressError) {
+        newErrors[index] = addressError
+      } else if (account && value.trim().toLowerCase() === account.toLowerCase()) {
+        newErrors[index] = "Cannot use your own account as a protector"
+      } else {
+        newErrors[index] = null
+      }
     } else {
       newErrors[index] = null
     }
@@ -189,6 +317,20 @@ export default function SetupPage() {
       setSaveError(`Invalid protector addresses. Please check all entries.`)
       return
     }
+    
+    // Check that no guardian is the same as the user account
+    const selfAsGuardian = validGuardians.some(g => g.trim().toLowerCase() === account.toLowerCase())
+    if (selfAsGuardian) {
+      setSaveError(`You cannot add yourself as a protector. Protectors must be different accounts.`)
+      return
+    }
+    
+    // Check for duplicate guardians
+    const uniqueGuardians = new Set(validGuardians.map(g => g.trim().toLowerCase()))
+    if (uniqueGuardians.size !== validGuardians.length) {
+      setSaveError(`Duplicate protector addresses detected. Each protector must be unique.`)
+      return
+    }
 
     setIsSaving(true)
     setSaveError(null)
@@ -262,6 +404,14 @@ export default function SetupPage() {
       // Store deploy hash and start polling
       setDeployHash(submitResult.data?.deployHash || null)
       setDeployStatus("pending")
+      setSaveSuccess(true)
+      setRegisteredGuardians(validGuardians)
+      
+      // Save to localStorage for persistence across page refreshes
+      if (typeof window !== 'undefined') {
+        const storageKey = `guardians_${account}`
+        localStorage.setItem(storageKey, JSON.stringify(validGuardians))
+      }
 
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "Failed to save guardians"
@@ -379,7 +529,7 @@ export default function SetupPage() {
             </div>
 
             {/* Protector Form */}
-            {isConnected && (
+            {isConnected && !saveSuccess && (
               <div className="border border-border/30 p-6 md:p-8">
                 <h3 className="font-mono text-xs uppercase tracking-widest text-foreground mb-8">
                   Protector Configuration
@@ -445,50 +595,94 @@ export default function SetupPage() {
                     </div>
                   )}
 
-                  {/* Success Display */}
-                  {saveSuccess && deployHash && (
-                    <div className="mb-6 p-4 border border-green-500/30 bg-green-500/5">
-                      <p className="font-mono text-xs text-green-500 mb-2">
-                        ✓ Protectors registered successfully!
-                      </p>
-                      <p className="font-mono text-[10px] text-muted-foreground break-all">
-                        Deploy Hash: {deployHash}
-                      </p>
-                    </div>
-                  )}
-
-                  {/* Pending Status */}
-                  {deployStatus === "pending" && deployHash && !saveSuccess && (
-                    <div className="mb-6 p-4 border border-yellow-500/30 bg-yellow-500/5">
-                      <p className="font-mono text-xs text-yellow-500 mb-2">
-                        ⏳ Deploy submitted, waiting for confirmation...
-                      </p>
-                      <p className="font-mono text-[10px] text-muted-foreground break-all">
-                        Deploy Hash: {deployHash}
-                      </p>
-                    </div>
-                  )}
-
                   <button
                     onClick={handleSaveGuardians}
-                    disabled={guardians.some((g) => !g.trim()) || isSaving || saveSuccess || guardianErrors.some((e) => e !== null)}
+                    disabled={guardians.some((g) => !g.trim()) || isSaving || guardianErrors.some((e) => e !== null)}
                     className="group inline-flex items-center gap-3 border border-foreground/20 px-8 py-4 font-mono text-xs uppercase tracking-widest text-foreground hover:border-accent hover:text-accent transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:border-foreground/20 disabled:hover:text-foreground"
                   >
                     <ScrambleTextOnHover
-                      text={isSaving ? "Signing..." : saveSuccess ? "Saved ✓" : "Save Protectors"}
+                      text={isSaving ? "Signing..." : "Save Protectors"}
                       as="span"
                       duration={0.6}
                     />
-                    {!isSaving && !saveSuccess && (
+                    {!isSaving && (
                       <BitmapChevron className="transition-transform duration-400 ease-in-out group-hover:rotate-45" />
                     )}
                   </button>
                   <p className="mt-4 font-mono text-xs text-muted-foreground leading-relaxed">
                     {isSaving
                       ? "Please sign the transaction in Casper Wallet..."
-                      : saveSuccess
-                        ? "Your guardians are now registered on-chain"
-                        : "Casper Wallet will pop up for signature"}
+                      : "Casper Wallet will pop up for signature"}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Registered Protectors Display */}
+            {isConnected && saveSuccess && registeredGuardians.length > 0 && (
+              <div className="border border-accent/30 bg-accent/5 p-6 md:p-8">
+                <div className="flex items-center justify-between mb-8">
+                  <h3 className="font-mono text-xs uppercase tracking-widest text-accent">
+                    Registered Protectors
+                  </h3>
+                  <span className="font-mono text-xs text-accent">
+                    {registeredGuardians.length} Active
+                  </span>
+                </div>
+
+                <div className="space-y-4">
+                  {registeredGuardians.map((guardian, index) => (
+                    <div key={index} className="border border-border/30 p-4 bg-background/50">
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="flex-1 min-w-0">
+                          <div className="font-mono text-xs uppercase tracking-[0.3em] text-muted-foreground mb-2">
+                            Protector {index + 1}
+                          </div>
+                          <div className="font-mono text-xs text-foreground break-all">
+                            {guardian}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className="font-mono text-[10px] uppercase tracking-widest text-accent">
+                            Active
+                          </span>
+                          <div className="w-2 h-2 rounded-full bg-accent animate-pulse" />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Success Display */}
+                {deployHash && (
+                  <div className="mt-6 p-4 border border-accent/30 bg-background/50">
+                    <p className="font-mono text-xs text-accent mb-2">
+                      ✓ Registration Complete
+                    </p>
+                    <div className="grid grid-cols-1 gap-2">
+                      <span className="font-mono text-[10px] uppercase tracking-[0.3em] text-muted-foreground">
+                        Deploy Hash
+                      </span>
+                      <span className="font-mono text-[10px] text-foreground/60 break-all">
+                        {deployHash}
+                      </span>
+                    </div>
+                    {deployStatus === "pending" && (
+                      <p className="mt-3 font-mono text-xs text-yellow-500">
+                        ⏳ Waiting for blockchain confirmation...
+                      </p>
+                    )}
+                    {deployStatus === "success" && (
+                      <p className="mt-3 font-mono text-xs text-green-500">
+                        ✓ Confirmed on blockchain
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                <div className="mt-6 pt-6 border-t border-border/30">
+                  <p className="font-mono text-xs text-muted-foreground leading-relaxed">
+                    Your protectors are now registered on-chain. They can approve recovery requests from the dashboard.
                   </p>
                 </div>
               </div>
