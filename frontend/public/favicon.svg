@@ -1,0 +1,13 @@
+<svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Dark background -->
+  <rect width="32" height="32" fill="#141414"/>
+  
+  <!-- Shield/Guard icon representing SentinelX -->
+  <path d="M16 4L8 8V14C8 19.5 11.5 24.5 16 26C20.5 24.5 24 19.5 24 14V8L16 4Z" fill="none" stroke="#F97316" stroke-width="2" stroke-linejoin="round"/>
+  
+  <!-- X mark in center -->
+  <path d="M13 13L19 19M19 13L13 19" stroke="#F97316" stroke-width="2" stroke-linecap="round"/>
+  
+  <!-- Accent glow effect -->
+  <path d="M16 4L8 8V14C8 19.5 11.5 24.5 16 26C20.5 24.5 24 19.5 24 14V8L16 4Z" fill="none" stroke="#F97316" stroke-width="0.5" opacity="0.3" stroke-linejoin="round"/>
+</svg>
