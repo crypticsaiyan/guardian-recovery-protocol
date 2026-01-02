@@ -30,21 +30,38 @@ export interface CasperWalletProvider {
  * Get the Casper Wallet provider instance
  * Returns undefined if the Casper Wallet extension is not installed
  */
+// Singleton instance
+let providerInstance: CasperWalletProvider | undefined;
+
+/**
+ * Get the Casper Wallet provider instance
+ * Returns undefined if the Casper Wallet extension is not installed
+ */
 export const getProvider = (): CasperWalletProvider | undefined => {
   if (typeof window === 'undefined') {
     return undefined;
   }
 
+  if (providerInstance) {
+    return providerInstance;
+  }
+
   const providerConstructor = window.CasperWalletProvider;
   if (providerConstructor === undefined) {
+    console.warn("CasperWalletProvider not found on window");
     return undefined;
   }
 
-  const provider = providerConstructor({
-    timeout: REQUESTS_TIMEOUT_MS,
-  });
-
-  return provider;
+  try {
+    providerInstance = providerConstructor({
+      timeout: REQUESTS_TIMEOUT_MS,
+    });
+    console.log("CasperWalletProvider initialized");
+    return providerInstance;
+  } catch (error) {
+    console.error("Failed to initialize CasperWalletProvider:", error);
+    return undefined;
+  }
 };
 
 /**
@@ -62,22 +79,34 @@ export const isCasperWalletInstalled = (): boolean => {
  * @returns The public key of the connected account, or null if connection failed
  */
 export const connectWallet = async (): Promise<string | null> => {
+  console.log("Attempting to connect wallet...");
   const provider = getProvider();
 
   if (!provider) {
+    console.error("Provider not found");
     throw new Error('Casper Wallet extension is not installed. Please install it from https://www.casperwallet.io/');
   }
 
   try {
-    const connected = await provider.requestConnection();
+    console.log("Requesting connection...");
+    // Add a race with a timeout to detect freezing
+    const connectionPromise = provider.requestConnection();
+    const timeoutPromise = new Promise<boolean>((_, reject) =>
+      setTimeout(() => reject(new Error("Connection request timed out. Please check if the Casper Wallet popup is open.")), 60000)
+    );
+
+    const connected = await Promise.race([connectionPromise, timeoutPromise]);
+    console.log("Connection response:", connected);
 
     if (!connected) {
       throw new Error('Connection request was rejected');
     }
 
     const publicKey = await provider.getActivePublicKey();
+    console.log("Got public key:", publicKey);
     return publicKey;
   } catch (error) {
+    console.error("Error in connectWallet:", error);
     if (error instanceof Error) {
       throw error;
     }

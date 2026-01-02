@@ -227,7 +227,7 @@ export default function SetupPage() {
       {/* Navigation */}
       <nav className="relative z-10 border-b border-border/30 px-6 md:px-28 py-6">
         <div className="flex items-center justify-between">
-          <a href="/" className="font-[var(--font-bebas)] text-2xl tracking-tight hover:text-accent transition-colors">
+          <a href="/" className="font-[(--font-bebas)] text-2xl tracking-tight hover:text-accent transition-colors">
             GUARDIAN
           </a>
           <div className="flex items-center gap-6">
@@ -250,7 +250,7 @@ export default function SetupPage() {
           {/* Header */}
           <div className="mb-16">
             <span className="font-mono text-xs uppercase tracking-[0.3em] text-accent">Phase 1 / Setup</span>
-            <h1 className="mt-4 font-[var(--font-bebas)] text-5xl md:text-7xl tracking-tight">
+            <h1 className="mt-4 font-[--font-bebas] text-5xl md:text-7xl tracking-tight">
               SETUP GUARDIANS
             </h1>
             <p className="mt-6 max-w-2xl font-mono text-sm text-muted-foreground leading-relaxed">
@@ -297,7 +297,7 @@ export default function SetupPage() {
                       className="group inline-flex items-center gap-3 border border-foreground/20 px-6 py-3 font-mono text-xs uppercase tracking-widest text-foreground hover:border-accent hover:text-accent transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       <ScrambleTextOnHover text={isConnecting ? "Connecting..." : "Connect Wallet"} as="span" duration={0.6} />
-                      {!isConnecting && <BitmapChevron className="transition-transform duration-[400ms] ease-in-out group-hover:rotate-45" />}
+                      {!isConnecting && <BitmapChevron className="transition-transform duration-400 ease-in-out group-hover:rotate-45" />}
                     </button>
                   )}
                 </div>
@@ -421,7 +421,7 @@ export default function SetupPage() {
                       duration={0.6}
                     />
                     {!isSaving && !saveSuccess && (
-                      <BitmapChevron className="transition-transform duration-[400ms] ease-in-out group-hover:rotate-45" />
+                      <BitmapChevron className="transition-transform duration-400 ease-in-out group-hover:rotate-45" />
                     )}
                   </button>
                   <p className="mt-4 font-mono text-xs text-muted-foreground leading-relaxed">
