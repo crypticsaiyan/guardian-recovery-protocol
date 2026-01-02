@@ -271,8 +271,8 @@ export default function SetupPage() {
           {/* Header */}
           <div className="mb-16">
             <span className="font-mono text-xs uppercase tracking-[0.3em] text-accent">Phase 1 / Setup</span>
-            <h1 className="mt-4 font-[var(--font-bebas)] text-5xl md:text-7xl tracking-tight">
-              SETUP PROTECTORS
+            <h1 className="mt-4 font-[--font-bebas] text-5xl md:text-7xl tracking-tight">
+              SETUP GUARDIANS
             </h1>
             <p className="mt-6 max-w-2xl font-mono text-sm text-muted-foreground leading-relaxed">
               Enter protector public keys (minimum 2). You will sign this transaction with your PRIMARY key (weight 3).
@@ -318,7 +318,7 @@ export default function SetupPage() {
                       className="group inline-flex items-center gap-3 border border-foreground/20 px-6 py-3 font-mono text-xs uppercase tracking-widest text-foreground hover:border-accent hover:text-accent transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       <ScrambleTextOnHover text={isConnecting ? "Connecting..." : "Connect Wallet"} as="span" duration={0.6} />
-                      {!isConnecting && <BitmapChevron className="transition-transform duration-[400ms] ease-in-out group-hover:rotate-45" />}
+                      {!isConnecting && <BitmapChevron className="transition-transform duration-400 ease-in-out group-hover:rotate-45" />}
                     </button>
                   )}
                 </div>
@@ -449,7 +449,7 @@ export default function SetupPage() {
                       duration={0.6}
                     />
                     {!isSaving && !saveSuccess && (
-                      <BitmapChevron className="transition-transform duration-[400ms] ease-in-out group-hover:rotate-45" />
+                      <BitmapChevron className="transition-transform duration-400 ease-in-out group-hover:rotate-45" />
                     )}
                   </button>
                   <p className="mt-4 font-mono text-xs text-muted-foreground leading-relaxed">
