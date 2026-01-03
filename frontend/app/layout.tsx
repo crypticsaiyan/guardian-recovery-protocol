@@ -18,26 +18,30 @@ const ibmPlexMono = IBM_Plex_Mono({
 const bebasNeue = Bebas_Neue({ weight: "400", subsets: ["latin"], variable: "--font-bebas" })
 
 export const metadata: Metadata = {
-  title: "SIGNAL — Experimental Creative Studio",
+  title: "SentinelX — Decentralized Account Recovery",
   description:
-    "Interface studies in controlled environments. We design systems that behave, not just screens that display.",
+    "Secure key recovery through distributed trust. SentinelX enables cryptographic account recovery with trusted protectors on Casper Network.",
   generator: "v0.app",
   icons: {
     icon: [
       {
-        url: "/icon-light-32x32.png",
+        url: "/icon-light-32x32.svg",
         media: "(prefers-color-scheme: light)",
       },
       {
-        url: "/icon-dark-32x32.png",
+        url: "/icon-dark-32x32.svg",
         media: "(prefers-color-scheme: dark)",
       },
       {
         url: "/icon.svg",
         type: "image/svg+xml",
       },
+      {
+        url: "/favicon.svg",
+        type: "image/svg+xml",
+      },
     ],
-    apple: "/apple-icon.png",
+    apple: "/apple-icon.svg",
   },
 }
 

@@ -172,7 +172,14 @@ export class DeployService {
      */
     jsonToDeploy(json: string): DeployUtil.Deploy {
         const parsed = JSON.parse(json);
-        return DeployUtil.deployFromJson(parsed).unwrap();
+        console.log('Parsing deploy JSON, keys:', Object.keys(parsed));
+
+        const result = DeployUtil.deployFromJson(parsed);
+        if (result.err) {
+            console.error('Deploy parsing error:', result.val);
+            throw new Error(`Failed to parse deploy: ${result.val}`);
+        }
+        return result.unwrap();
     }
 
     /**

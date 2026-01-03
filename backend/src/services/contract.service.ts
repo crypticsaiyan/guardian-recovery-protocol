@@ -283,6 +283,37 @@ export class ContractService {
             message: deployService.deployToJson(deploy),
         };
     }
+
+    /**
+     * Build deploy to get guardians for an account (Action 6)
+     * 
+     * @param signerPublicKeyHex - Who is calling
+     * @param targetAccountHex - Account to get guardians for
+     */
+    async buildGetGuardiansDeploy(
+        signerPublicKeyHex: string,
+        targetAccountHex: string
+    ): Promise<DeployResult> {
+        const signerKey = CLPublicKey.fromHex(signerPublicKeyHex);
+        const targetAccount = CLPublicKey.fromHex(targetAccountHex);
+
+        const args = RuntimeArgs.fromMap({
+            account: CLValueBuilder.byteArray(targetAccount.toAccountHash()),
+        });
+
+        const deploy = this.buildRecoveryDeploy(
+            signerKey,
+            RecoveryAction.GET_GUARDIANS,
+            args,
+            config.deploy.paymentAmount
+        );
+
+        return {
+            deployHash: '',
+            success: true,
+            message: deployService.deployToJson(deploy),
+        };
+    }
 }
 
 // Export singleton instance
