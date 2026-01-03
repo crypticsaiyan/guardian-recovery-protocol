@@ -25,6 +25,26 @@ router.post('/register', async (req: Request, res: Response) => {
                 error: 'At least 2 guardians are required',
             } as ApiResponse);
         }
+        
+        // Check that user is not in the guardians list
+        const userIsGuardian = guardians.some(
+            (g: string) => g.trim().toLowerCase() === userPublicKey.trim().toLowerCase()
+        );
+        if (userIsGuardian) {
+            return res.status(400).json({
+                success: false,
+                error: 'User account cannot be a guardian. Guardians must be different accounts.',
+            } as ApiResponse);
+        }
+        
+        // Check for duplicate guardians
+        const uniqueGuardians = new Set(guardians.map((g: string) => g.trim().toLowerCase()));
+        if (uniqueGuardians.size !== guardians.length) {
+            return res.status(400).json({
+                success: false,
+                error: 'Duplicate guardian addresses detected. Each guardian must be unique.',
+            } as ApiResponse);
+        }
 
         const result = await contractService.initializeGuardians(
             userPublicKey,
@@ -214,6 +234,40 @@ router.post('/has-guardians', async (req: Request, res: Response) => {
         res.status(500).json({
             success: false,
             error: `Failed to build has-guardians deploy: ${error}`,
+        } as ApiResponse);
+    }
+});
+
+/**
+ * POST /recovery/get-guardians
+ * Build deploy to get guardians for an account (Action 6)
+ */
+router.post('/get-guardians', async (req: Request, res: Response) => {
+    try {
+        const { signerPublicKey, targetAccount } = req.body;
+
+        if (!signerPublicKey || !targetAccount) {
+            return res.status(400).json({
+                success: false,
+                error: 'Missing required fields: signerPublicKey, targetAccount',
+            } as ApiResponse);
+        }
+
+        const result = await contractService.buildGetGuardiansDeploy(
+            signerPublicKey,
+            targetAccount
+        );
+
+        res.json({
+            success: true,
+            data: {
+                deployJson: result.message,
+            },
+        } as ApiResponse);
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            error: `Failed to build get-guardians deploy: ${error}`,
         } as ApiResponse);
     }
 });

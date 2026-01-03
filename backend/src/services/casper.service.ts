@@ -126,11 +126,34 @@ export class CasperService {
     /**
      * Get deploy status
      */
-    async getDeployStatus(deployHash: string): Promise<any> {
+    async getDeployStatus(deployHash: string): Promise<{
+        deployHash: string;
+        status: 'pending' | 'success' | 'failed';
+        executionResult?: any;
+    } | null> {
         try {
-            const deploy = await this.client.getDeploy(deployHash);
-            return deploy;
-        } catch {
+            const [deploy, deployResult] = await this.client.getDeploy(deployHash);
+
+            let status: 'pending' | 'success' | 'failed' = 'pending';
+            let executionResult = null;
+
+            if (deployResult.execution_results && deployResult.execution_results.length > 0) {
+                const result = deployResult.execution_results[0];
+                executionResult = result;
+                if (result.result.Success) {
+                    status = 'success';
+                } else {
+                    status = 'failed';
+                }
+            }
+
+            return {
+                deployHash,
+                status,
+                executionResult
+            };
+        } catch (error) {
+            console.error(`Error getting deploy status: ${error}`);
             return null;
         }
     }

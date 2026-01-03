@@ -173,6 +173,24 @@ export const hasGuardians = async (
     }
 };
 
+/**
+ * Get guardians for an account
+ */
+export const getGuardians = async (
+    signerPublicKey: string,
+    targetAccount: string
+): Promise<ApiResponse<DeployResponse>> => {
+    try {
+        const response = await apiClient.post('/recovery/get-guardians', {
+            signerPublicKey,
+            targetAccount,
+        });
+        return response.data;
+    } catch (error) {
+        return handleApiError(error);
+    }
+};
+
 // ==================== SESSION ENDPOINTS ====================
 
 /**
