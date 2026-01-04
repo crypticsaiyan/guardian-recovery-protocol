@@ -4,100 +4,142 @@ import {
     RuntimeArgs,
     CLAccountHash,
     DeployUtil,
+    Contracts,
+    CasperClient,
 } from 'casper-js-sdk';
 import { config } from '../config';
 import { deployService } from './deploy.service';
 import { DeployResult } from '../types';
 
 /**
- * RecoveryAction - Maps to the action parameter in the session WASM
- */
-export enum RecoveryAction {
-    INITIALIZE_GUARDIANS = 1,
-    INITIATE_RECOVERY = 2,
-    APPROVE_RECOVERY = 3,
-    IS_THRESHOLD_MET = 4,
-    FINALIZE_RECOVERY = 5,
-    GET_GUARDIANS = 6,
-    GET_THRESHOLD = 7,
-    HAS_GUARDIANS = 8,
-}
-
-/**
- * ContractService - Builds session WASM deploys for recovery operations
+ * ContractService - Builds deploys for the recovery_registry stored contract
  * 
- * New Approach: Uses session WASM with action parameter
- * Each call executes the recovery_registry.wasm with:
- *   - action: u8 (which function to run)
- *   - other arguments specific to the action
+ * The contract must be deployed first, then its hash is used for all calls.
+ * Set CONTRACT_HASH in .env after deploying.
  */
 export class ContractService {
+    private contractClient: Contracts.Contract;
+    private contractHash: string | null;
     private wasmPath: string;
 
     constructor() {
         this.wasmPath = config.wasm.recoveryRegistry;
+        this.contractHash = process.env.RECOVERY_CONTRACT_HASH || null;
+        
+        const casperClient = new CasperClient(config.casper.nodeUrl);
+        this.contractClient = new Contracts.Contract(casperClient);
+        
+        if (this.contractHash) {
+            this.contractClient.setContractHash(`hash-${this.contractHash}`);
+            console.log(`Contract service initialized with hash: ${this.contractHash}`);
+        } else {
+            console.log('Contract hash not set. Deploy the contract first.');
+        }
     }
 
     /**
-     * Helper: Build a recovery action deploy
+     * Check if contract is deployed
      */
-    private buildRecoveryDeploy(
+    isContractDeployed(): boolean {
+        return this.contractHash !== null;
+    }
+
+    /**
+     * Set contract hash after deployment
+     */
+    setContractHash(hash: string) {
+        this.contractHash = hash;
+        this.contractClient.setContractHash(`hash-${hash}`);
+        console.log(`Contract hash set to: ${hash}`);
+    }
+
+    /**
+     * Build deploy to install the contract (one-time)
+     */
+    async buildInstallDeploy(installerPublicKeyHex: string): Promise<DeployResult> {
+        const installerKey = CLPublicKey.fromHex(installerPublicKeyHex);
+        
+        const deploy = deployService.buildSessionWasmDeploy(
+            installerKey,
+            this.wasmPath,
+            RuntimeArgs.fromMap({}),
+            '400000000000' // 400 CSPR for contract installation
+        );
+
+        return {
+            deployHash: '',
+            success: true,
+            message: deployService.deployToJson(deploy),
+        };
+    }
+
+    /**
+     * Build deploy to install the minimal test contract
+     */
+    async buildTestContractDeploy(installerPublicKeyHex: string): Promise<DeployResult> {
+        const installerKey = CLPublicKey.fromHex(installerPublicKeyHex);
+        
+        const deploy = deployService.buildSessionWasmDeploy(
+            installerKey,
+            config.wasm.testContract,
+            RuntimeArgs.fromMap({}),
+            '100000000000' // 100 CSPR for minimal test contract
+        );
+
+        return {
+            deployHash: '',
+            success: true,
+            message: deployService.deployToJson(deploy),
+        };
+    }
+
+    /**
+     * Build contract call deploy helper
+     */
+    private buildContractCallDeploy(
         callerPublicKey: CLPublicKey,
-        action: RecoveryAction,
+        entryPoint: string,
         args: RuntimeArgs,
         paymentAmount: string = config.deploy.paymentAmount
     ): DeployUtil.Deploy {
-        // Add action to args
-        const fullArgs = RuntimeArgs.fromMap({
-            action: CLValueBuilder.u8(action),
-            ...Object.fromEntries(
-                Array.from(args.args.entries()).map(([k, v]) => [k, v])
-            ),
-        });
+        if (!this.contractHash) {
+            throw new Error('Contract not deployed. Set RECOVERY_CONTRACT_HASH in .env');
+        }
 
-        return deployService.buildSessionWasmDeploy(
+        return deployService.buildContractCallDeploy(
             callerPublicKey,
-            this.wasmPath,
-            fullArgs,
+            this.contractHash,
+            entryPoint,
+            args,
             paymentAmount
         );
     }
 
     // ============================================================================
-    // ACTION 1: Initialize Guardians
+    // Initialize Guardians
     // ============================================================================
-
-    /**
-     * Register account with guardians and threshold
-     * Called by: User (before disaster)
-     * 
-     * @param userPublicKeyHex - User's public key (hex)
-     * @param guardians - Array of guardian public key hexes
-     * @param threshold - Number of guardians required for recovery
-     */
     async initializeGuardians(
         userPublicKeyHex: string,
         guardians: string[],
         threshold: number
     ): Promise<DeployResult> {
         const userPublicKey = CLPublicKey.fromHex(userPublicKeyHex);
-        const userAccountHash = userPublicKey.toAccountHash();
+        const userAccountHash = new CLAccountHash(userPublicKey.toAccountHash());
 
-        // Build guardian account hashes
         const guardianAccountHashes = guardians.map((g) => {
             const pk = CLPublicKey.fromHex(g);
             return new CLAccountHash(pk.toAccountHash());
         });
 
         const args = RuntimeArgs.fromMap({
-            account: CLValueBuilder.byteArray(userAccountHash),
+            account: userAccountHash,
             guardians: CLValueBuilder.list(guardianAccountHashes),
             threshold: CLValueBuilder.u8(threshold),
         });
 
-        const deploy = this.buildRecoveryDeploy(
+        const deploy = this.buildContractCallDeploy(
             userPublicKey,
-            RecoveryAction.INITIALIZE_GUARDIANS,
+            'initialize_guardians',
             args
         );
 
@@ -109,17 +151,8 @@ export class ContractService {
     }
 
     // ============================================================================
-    // ACTION 2: Initiate Recovery
+    // Initiate Recovery
     // ============================================================================
-
-    /**
-     * Initiate recovery request
-     * Called by: Anyone (guardian or helper)
-     * 
-     * @param initiatorPublicKeyHex - Who is initiating (pays gas)
-     * @param targetAccountHex - Account to recover
-     * @param newPublicKeyHex - New public key to add
-     */
     async initiateRecovery(
         initiatorPublicKeyHex: string,
         targetAccountHex: string,
@@ -129,14 +162,21 @@ export class ContractService {
         const targetAccount = CLPublicKey.fromHex(targetAccountHex);
         const newPublicKey = CLPublicKey.fromHex(newPublicKeyHex);
 
+        const targetAccountHash = new CLAccountHash(targetAccount.toAccountHash());
+
+        console.log('Initiate Recovery Debug:');
+        console.log('  Target Public Key:', targetAccountHex);
+        console.log('  Target Account Hash:', Buffer.from(targetAccount.toAccountHash()).toString('hex'));
+        console.log('  Contract Hash:', this.contractHash);
+
         const args = RuntimeArgs.fromMap({
-            account: CLValueBuilder.byteArray(targetAccount.toAccountHash()),
+            account: targetAccountHash,
             new_public_key: newPublicKey,
         });
 
-        const deploy = this.buildRecoveryDeploy(
+        const deploy = this.buildContractCallDeploy(
             initiatorKey,
-            RecoveryAction.INITIATE_RECOVERY,
+            'initiate_recovery',
             args
         );
 
@@ -148,16 +188,8 @@ export class ContractService {
     }
 
     // ============================================================================
-    // ACTION 3: Approve Recovery
+    // Approve Recovery
     // ============================================================================
-
-    /**
-     * Approve recovery request
-     * Called by: Guardian (must be in guardian list)
-     * 
-     * @param guardianPublicKeyHex - Guardian's public key
-     * @param recoveryId - Recovery ID (U256 as string)
-     */
     async approveRecovery(
         guardianPublicKeyHex: string,
         recoveryId: string
@@ -168,9 +200,9 @@ export class ContractService {
             recovery_id: CLValueBuilder.u256(recoveryId),
         });
 
-        const deploy = this.buildRecoveryDeploy(
+        const deploy = this.buildContractCallDeploy(
             guardianKey,
-            RecoveryAction.APPROVE_RECOVERY,
+            'approve_recovery',
             args
         );
 
@@ -182,16 +214,8 @@ export class ContractService {
     }
 
     // ============================================================================
-    // ACTION 4: Check Threshold Met
+    // Check Threshold Met
     // ============================================================================
-
-    /**
-     * Check if threshold is met for recovery
-     * Note: This executes on-chain. For off-chain queries, use state queries.
-     * 
-     * @param signerPublicKeyHex - Who is calling (pays gas)
-     * @param recoveryId - Recovery ID
-     */
     async buildCheckThresholdDeploy(
         signerPublicKeyHex: string,
         recoveryId: string
@@ -202,43 +226,9 @@ export class ContractService {
             recovery_id: CLValueBuilder.u256(recoveryId),
         });
 
-        const deploy = this.buildRecoveryDeploy(
+        const deploy = this.buildContractCallDeploy(
             signerKey,
-            RecoveryAction.IS_THRESHOLD_MET,
-            args,
-            config.deploy.paymentAmount // Lower gas for query
-        );
-
-        return {
-            deployHash: '',
-            success: true,
-            message: deployService.deployToJson(deploy),
-        };
-    }
-
-    // ============================================================================
-    // ACTION 5: Finalize Recovery
-    // ============================================================================
-
-    /**
-     * Finalize recovery (mark complete after key rotation is done)
-     * 
-     * @param signerPublicKeyHex - Who is calling
-     * @param recoveryId - Recovery ID
-     */
-    async finalizeRecovery(
-        signerPublicKeyHex: string,
-        recoveryId: string
-    ): Promise<DeployResult> {
-        const signerKey = CLPublicKey.fromHex(signerPublicKeyHex);
-
-        const args = RuntimeArgs.fromMap({
-            recovery_id: CLValueBuilder.u256(recoveryId),
-        });
-
-        const deploy = this.buildRecoveryDeploy(
-            signerKey,
-            RecoveryAction.FINALIZE_RECOVERY,
+            'is_threshold_met',
             args
         );
 
@@ -250,31 +240,22 @@ export class ContractService {
     }
 
     // ============================================================================
-    // ACTION 8: Has Guardians (Query via session)
+    // Finalize Recovery
     // ============================================================================
-
-    /**
-     * Build deploy to check if account has guardians
-     * 
-     * @param signerPublicKeyHex - Who is calling
-     * @param targetAccountHex - Account to check
-     */
-    async buildHasGuardiansDeploy(
+    async finalizeRecovery(
         signerPublicKeyHex: string,
-        targetAccountHex: string
+        recoveryId: string
     ): Promise<DeployResult> {
         const signerKey = CLPublicKey.fromHex(signerPublicKeyHex);
-        const targetAccount = CLPublicKey.fromHex(targetAccountHex);
 
         const args = RuntimeArgs.fromMap({
-            account: CLValueBuilder.byteArray(targetAccount.toAccountHash()),
+            recovery_id: CLValueBuilder.u256(recoveryId),
         });
 
-        const deploy = this.buildRecoveryDeploy(
+        const deploy = this.buildContractCallDeploy(
             signerKey,
-            RecoveryAction.HAS_GUARDIANS,
-            args,
-            config.deploy.paymentAmount
+            'finalize_recovery',
+            args
         );
 
         return {
@@ -284,28 +265,53 @@ export class ContractService {
         };
     }
 
-    /**
-     * Build deploy to get guardians for an account (Action 6)
-     * 
-     * @param signerPublicKeyHex - Who is calling
-     * @param targetAccountHex - Account to get guardians for
-     */
+    // ============================================================================
+    // Has Guardians
+    // ============================================================================
+    async buildHasGuardiansDeploy(
+        signerPublicKeyHex: string,
+        targetAccountHex: string
+    ): Promise<DeployResult> {
+        const signerKey = CLPublicKey.fromHex(signerPublicKeyHex);
+        const targetAccount = CLPublicKey.fromHex(targetAccountHex);
+        const targetAccountHash = new CLAccountHash(targetAccount.toAccountHash());
+
+        const args = RuntimeArgs.fromMap({
+            account: targetAccountHash,
+        });
+
+        const deploy = this.buildContractCallDeploy(
+            signerKey,
+            'has_guardians',
+            args
+        );
+
+        return {
+            deployHash: '',
+            success: true,
+            message: deployService.deployToJson(deploy),
+        };
+    }
+
+    // ============================================================================
+    // Get Guardians
+    // ============================================================================
     async buildGetGuardiansDeploy(
         signerPublicKeyHex: string,
         targetAccountHex: string
     ): Promise<DeployResult> {
         const signerKey = CLPublicKey.fromHex(signerPublicKeyHex);
         const targetAccount = CLPublicKey.fromHex(targetAccountHex);
+        const targetAccountHash = new CLAccountHash(targetAccount.toAccountHash());
 
         const args = RuntimeArgs.fromMap({
-            account: CLValueBuilder.byteArray(targetAccount.toAccountHash()),
+            account: targetAccountHash,
         });
 
-        const deploy = this.buildRecoveryDeploy(
+        const deploy = this.buildContractCallDeploy(
             signerKey,
-            RecoveryAction.GET_GUARDIANS,
-            args,
-            config.deploy.paymentAmount
+            'get_guardians',
+            args
         );
 
         return {

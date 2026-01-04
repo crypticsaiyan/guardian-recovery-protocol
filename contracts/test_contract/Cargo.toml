@@ -1,0 +1,16 @@
+[package]
+name = "test_contract"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+casper-contract = "4.0.0"
+casper-types = "4.0.2"
+
+[[bin]]
+name = "test_contract"
+path = "src/main.rs"
+
+[profile.release]
+lto = true
+codegen-units = 1

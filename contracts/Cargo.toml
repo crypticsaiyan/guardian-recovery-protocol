@@ -7,6 +7,7 @@ members = [
     "remove_associated_key",
     "update_thresholds",
     "update_associated_keys",
+    "test_contract",
 ]
 
 [workspace.package]
@@ -17,6 +18,7 @@ license = "MIT"
 [workspace.dependencies]
 casper-contract = "4.0"
 casper-types = { version = "4.0", default-features = false }
+base64ct = "=1.6.0"
 
 [profile.release]
 codegen-units = 1

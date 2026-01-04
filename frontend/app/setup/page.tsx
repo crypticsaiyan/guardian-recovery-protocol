@@ -488,7 +488,7 @@ export default function SetupPage() {
       {/* Navigation */}
       <nav className="relative z-10 border-b border-border/30 px-6 md:px-28 py-6">
         <div className="flex items-center justify-between">
-          <a href="/" className="font-[(--font-bebas)] text-2xl tracking-tight hover:text-accent transition-colors">
+          <a href="/" className="font-[var(--font-bebas)] text-2xl tracking-tight hover:text-accent transition-colors">
             SENTINELX
           </a>
           <div className="flex items-center gap-6">
@@ -497,6 +497,12 @@ export default function SetupPage() {
             </a>
             <a href="/recovery" className="font-mono text-xs uppercase tracking-[0.3em] text-muted-foreground hover:text-foreground transition-colors">
               Recovery
+            </a>
+            <a href="/approve" className="font-mono text-xs uppercase tracking-[0.3em] text-muted-foreground hover:text-foreground transition-colors">
+              Approve
+            </a>
+            <a href="/execute" className="font-mono text-xs uppercase tracking-[0.3em] text-muted-foreground hover:text-foreground transition-colors">
+              Execute
             </a>
             <a href="/dashboard" className="font-mono text-xs uppercase tracking-[0.3em] text-muted-foreground hover:text-foreground transition-colors">
               Dashboard
@@ -511,7 +517,7 @@ export default function SetupPage() {
           {/* Header */}
           <div className="mb-16">
             <span className="font-mono text-xs uppercase tracking-[0.3em] text-accent">Phase 1 / Setup</span>
-            <h1 className="mt-4 font-[--font-bebas] text-5xl md:text-7xl tracking-tight">
+            <h1 className="mt-4 font-[var(--font-bebas)] text-5xl md:text-7xl tracking-tight">
               SETUP GUARDIANS
             </h1>
             <p className="mt-6 max-w-2xl font-mono text-sm text-muted-foreground leading-relaxed">

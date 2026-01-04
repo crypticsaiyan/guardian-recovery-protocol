@@ -14,31 +14,28 @@ import {
   isCasperWalletInstalled,
   getProvider
 } from "@/lib/casper-wallet"
-import { initiateRecovery, submitDeploy, getDeployStatus } from "@/lib/api"
-import { isValidCasperAddress, getAddressValidationError } from "@/lib/validation"
+import { approveRecovery, submitDeploy, getDeployStatus } from "@/lib/api"
 import gsap from "gsap"
-import { ScrollTrigger } from "gsap/ScrollTrigger"
 
-gsap.registerPlugin(ScrollTrigger)
-
-export default function RecoveryPage() {
+export default function ApprovePage() {
   const sectionRef = useRef<HTMLElement>(null)
   const formRef = useRef<HTMLDivElement>(null)
-  const [accountAddress, setAccountAddress] = useState("")
-  const [accountAddressError, setAccountAddressError] = useState<string | null>(null)
-  const [newPublicKey, setNewPublicKey] = useState("")
-  const [newPublicKeyError, setNewPublicKeyError] = useState<string | null>(null)
+  
+  // Wallet state
   const [isConnected, setIsConnected] = useState(false)
   const [guardianKey, setGuardianKey] = useState("")
   const [isConnecting, setIsConnecting] = useState(false)
   const [connectionError, setConnectionError] = useState<string | null>(null)
-  const [recoveryStatus, setRecoveryStatus] = useState<"idle" | "pending" | "submitted" | "confirmed">("idle")
-
-  // Recovery state
+  
+  // Form state
+  const [recoveryId, setRecoveryId] = useState("")
+  const [recoveryIdError, setRecoveryIdError] = useState<string | null>(null)
+  
+  // Approval state
+  const [approvalStatus, setApprovalStatus] = useState<"idle" | "pending" | "submitted" | "confirmed">("idle")
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [deployHash, setDeployHash] = useState<string | null>(null)
-  const [recoveryId, setRecoveryId] = useState<string | null>(null)
 
   // Check wallet connection on mount
   useEffect(() => {
@@ -65,17 +62,17 @@ export default function RecoveryPage() {
 
   // Poll for deploy status
   useEffect(() => {
-    if (!deployHash || recoveryStatus === "confirmed") return
+    if (!deployHash || approvalStatus === "confirmed") return
 
     const pollStatus = async () => {
       try {
         const result = await getDeployStatus(deployHash)
         if (result.success && result.data) {
           if (result.data.status === "success") {
-            setRecoveryStatus("confirmed")
+            setApprovalStatus("confirmed")
           } else if (result.data.status === "failed") {
-            setSubmitError("Recovery deploy failed on-chain")
-            setRecoveryStatus("idle")
+            setSubmitError("Approval deploy failed on-chain")
+            setApprovalStatus("idle")
           }
         }
       } catch (error) {
@@ -85,8 +82,9 @@ export default function RecoveryPage() {
 
     const interval = setInterval(pollStatus, 5000)
     return () => clearInterval(interval)
-  }, [deployHash, recoveryStatus])
+  }, [deployHash, approvalStatus])
 
+  // Animation
   useEffect(() => {
     if (!sectionRef.current || !formRef.current) return
 
@@ -102,19 +100,18 @@ export default function RecoveryPage() {
     return () => ctx.revert()
   }, [])
 
-  const handleConnectGuardianKey = async () => {
+  const handleConnect = async () => {
     setIsConnecting(true)
     setConnectionError(null)
 
     try {
       if (!isCasperWalletInstalled()) {
-        setConnectionError("Casper Wallet extension is not installed. Please install it from casperwallet.io")
+        setConnectionError("Casper Wallet extension is not installed")
         window.open("https://www.casperwallet.io/", "_blank")
         return
       }
 
       const publicKey = await connectWallet()
-
       if (publicKey) {
         setIsConnected(true)
         setGuardianKey(publicKey)
@@ -122,7 +119,6 @@ export default function RecoveryPage() {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "Failed to connect wallet"
       setConnectionError(errorMessage)
-      console.error("Wallet connection error:", error)
     } finally {
       setIsConnecting(false)
     }
@@ -141,37 +137,37 @@ export default function RecoveryPage() {
     }
   }
 
-  const handleStartRecovery = async () => {
-    if (!accountAddress.trim() || !newPublicKey.trim()) {
-      setSubmitError("Please fill in all fields")
+  const validateRecoveryId = (value: string): string | null => {
+    if (!value.trim()) return null
+    // Recovery ID should be a positive integer (U256)
+    if (!/^\d+$/.test(value.trim())) {
+      return "Recovery ID must be a positive number"
+    }
+    return null
+  }
+
+  const handleApprove = async () => {
+    if (!recoveryId.trim()) {
+      setSubmitError("Please enter a recovery ID")
       return
     }
 
-    // Validate addresses before submitting
-    if (!isValidCasperAddress(accountAddress.trim())) {
-      setSubmitError("Invalid account address format")
-      return
-    }
-
-    if (!isValidCasperAddress(newPublicKey.trim())) {
-      setSubmitError("Invalid new public key format")
+    const validationError = validateRecoveryId(recoveryId)
+    if (validationError) {
+      setSubmitError(validationError)
       return
     }
 
     setIsSubmitting(true)
     setSubmitError(null)
-    setRecoveryStatus("pending")
+    setApprovalStatus("pending")
 
     try {
       // Step 1: Get unsigned deploy from backend
-      const initiateResult = await initiateRecovery(
-        guardianKey,
-        accountAddress.trim(),
-        newPublicKey.trim()
-      )
+      const approveResult = await approveRecovery(guardianKey, recoveryId.trim())
 
-      if (!initiateResult.success || !initiateResult.data?.deployJson) {
-        throw new Error(initiateResult.error || "Failed to build recovery deploy")
+      if (!approveResult.success || !approveResult.data?.deployJson) {
+        throw new Error(approveResult.error || "Failed to build approval deploy")
       }
 
       // Step 2: Sign the deploy with Casper Wallet
@@ -180,13 +176,10 @@ export default function RecoveryPage() {
         throw new Error("Casper Wallet not available")
       }
 
-      // Ensure deployJson is a string for the wallet
-      const deployJson = initiateResult.data.deployJson
+      const deployJson = approveResult.data.deployJson
       const deployString = typeof deployJson === 'string' ? deployJson : JSON.stringify(deployJson)
 
-      // Sign the deploy using Casper Wallet
       const response = await provider.sign(deployString, guardianKey)
-      console.log("Recovery sign response:", response)
 
       if (response.cancelled) {
         throw new Error("Sign request cancelled by user")
@@ -197,47 +190,35 @@ export default function RecoveryPage() {
         throw new Error("Failed to get signature from wallet")
       }
 
-      // Reconstruct the deploy from the JSON
+      // Reconstruct the deploy
       const originalDeployJson = typeof deployJson === 'string' ? JSON.parse(deployJson) : deployJson
       const deploy = DeployUtil.deployFromJson(originalDeployJson).unwrap()
 
-      // Get the public key to determine the signature algorithm
+      // Add signature with algorithm tag
       const publicKey = CLPublicKey.fromHex(guardianKey)
-
-      // Casper Wallet returns the signature without the algorithm tag
-      // We need to prepend the tag: 01 for Ed25519, 02 for Secp256k1
       const algorithmTag = publicKey.isEd25519() ? '01' : '02'
       const fullSignature = algorithmTag + signatureHex
 
-      // Create a proper approval with hex strings
       const approval = new DeployUtil.Approval()
       approval.signer = publicKey.toHex()
       approval.signature = fullSignature
-
-      // Add the approval to the deploy
       deploy.approvals.push(approval)
 
-      // Step 3: Submit signed deploy to the network
+      // Step 3: Submit signed deploy
       const signedDeployJson = DeployUtil.deployToJson(deploy)
-      console.log("Recovery deploy approvals count:", deploy.approvals.length)
-
       const submitResult = await submitDeploy(JSON.stringify(signedDeployJson))
-      console.log("Recovery submit result:", submitResult)
 
       if (!submitResult.success) {
         throw new Error(submitResult.error || "Failed to submit deploy")
       }
 
-      // Store deploy hash and update status
       setDeployHash(submitResult.data?.deployHash || null)
-      setRecoveryId(submitResult.data?.deployHash || null) // Using deploy hash as recovery ID for now
-      setRecoveryStatus("submitted")
+      setApprovalStatus("submitted")
 
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : "Failed to start recovery"
+      const errorMessage = error instanceof Error ? error.message : "Failed to approve recovery"
       setSubmitError(errorMessage)
-      setRecoveryStatus("idle")
-      console.error("Recovery error:", error)
+      setApprovalStatus("idle")
     } finally {
       setIsSubmitting(false)
     }
@@ -254,14 +235,11 @@ export default function RecoveryPage() {
             SENTINELX
           </a>
           <div className="flex items-center gap-6">
-            <a href="/#how-it-works" className="font-mono text-xs uppercase tracking-[0.3em] text-muted-foreground hover:text-foreground transition-colors">
-              How It Works
-            </a>
             <a href="/setup" className="font-mono text-xs uppercase tracking-[0.3em] text-muted-foreground hover:text-foreground transition-colors">
               Setup
             </a>
-            <a href="/approve" className="font-mono text-xs uppercase tracking-[0.3em] text-muted-foreground hover:text-foreground transition-colors">
-              Approve
+            <a href="/recovery" className="font-mono text-xs uppercase tracking-[0.3em] text-muted-foreground hover:text-foreground transition-colors">
+              Recovery
             </a>
             <a href="/execute" className="font-mono text-xs uppercase tracking-[0.3em] text-muted-foreground hover:text-foreground transition-colors">
               Execute
@@ -278,24 +256,24 @@ export default function RecoveryPage() {
         <div className="max-w-4xl">
           {/* Header */}
           <div className="mb-16">
-            <span className="font-mono text-xs uppercase tracking-[0.3em] text-accent">Phase 2 / Recovery</span>
+            <span className="font-mono text-xs uppercase tracking-[0.3em] text-accent">Phase 2 / Approval</span>
             <h1 className="mt-4 font-[var(--font-bebas)] text-5xl md:text-7xl tracking-tight">
-              I LOST MY KEY
+              APPROVE RECOVERY
             </h1>
             <p className="mt-6 max-w-2xl font-mono text-sm text-muted-foreground leading-relaxed">
-              Initiate recovery for your account. You will sign with a PROTECTOR key (weight 1) borrowed from a friend.
-              Recovery requires all 3 protector approvals and a 30-day waiting period.
+              As a protector, approve a recovery request. Each guardian must independently approve.
+              Once threshold is met, the recovery can proceed.
             </p>
           </div>
 
           {/* Form */}
           <div ref={formRef} className="space-y-12">
-            {/* Protector Key Connection */}
+            {/* Guardian Key Connection */}
             <div className="border border-border/30 p-6 md:p-8">
               <div className="flex items-center justify-between mb-6">
                 <div>
                   <h3 className="font-mono text-xs uppercase tracking-widest text-foreground mb-2">
-                    Protector Key
+                    Your Guardian Key
                   </h3>
                   {isConnected ? (
                     <div>
@@ -322,135 +300,71 @@ export default function RecoveryPage() {
                     </button>
                   ) : (
                     <button
-                      onClick={handleConnectGuardianKey}
+                      onClick={handleConnect}
                       disabled={isConnecting}
-                      className="group inline-flex items-center gap-3 border border-foreground/20 px-6 py-3 font-mono text-xs uppercase tracking-widest text-foreground hover:border-accent hover:text-accent transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="group inline-flex items-center gap-3 border border-foreground/20 px-6 py-3 font-mono text-xs uppercase tracking-widest text-foreground hover:border-accent hover:text-accent transition-all duration-200 disabled:opacity-50"
                     >
-                      <ScrambleTextOnHover text={isConnecting ? "Connecting..." : "Connect Protector Key"} as="span" duration={0.6} />
+                      <ScrambleTextOnHover text={isConnecting ? "Connecting..." : "Connect Wallet"} as="span" duration={0.6} />
                       {!isConnecting && <BitmapChevron className="transition-transform duration-[400ms] ease-in-out group-hover:rotate-45" />}
                     </button>
                   )}
                 </div>
               </div>
 
-              {/* Connection Error */}
               {connectionError && (
                 <div className="mb-6 p-4 border border-red-500/30 bg-red-500/5">
-                  <p className="font-mono text-xs text-red-500">
-                    {connectionError}
-                  </p>
-                </div>
-              )}
-
-              {!isConnected && (
-                <div className="pt-6 border-t border-border/30">
-                  <p className="font-mono text-xs text-muted-foreground leading-relaxed">
-                    ⚠ You need to import a protector key from one of your friends into Casper Wallet before starting recovery.
-                  </p>
-                </div>
-              )}
-
-              {isConnected && (
-                <div className="pt-6 border-t border-border/30">
-                  <div className="grid grid-cols-1 gap-1 mb-2">
-                    <span className="font-mono text-xs uppercase tracking-[0.3em] text-muted-foreground">
-                      Status
-                    </span>
-                    <span className="font-mono text-xs text-foreground/80">
-                      Ready to initiate recovery
-                    </span>
-                  </div>
+                  <p className="font-mono text-xs text-red-500">{connectionError}</p>
                 </div>
               )}
             </div>
 
-            {/* Recovery Form */}
-            {isConnected && recoveryStatus === "idle" && (
+            {/* Approval Form */}
+            {isConnected && approvalStatus === "idle" && (
               <div className="border border-border/30 p-6 md:p-8">
                 <h3 className="font-mono text-xs uppercase tracking-widest text-foreground mb-8">
-                  Recovery Configuration
+                  Recovery Approval
                 </h3>
 
                 <div className="space-y-6">
-                  {/* Account Address */}
                   <div className="space-y-2">
                     <label className="font-mono text-xs uppercase tracking-[0.3em] text-muted-foreground">
-                      Your Account Address
+                      Recovery ID
                     </label>
                     <input
                       type="text"
-                      value={accountAddress}
+                      value={recoveryId}
                       onChange={(e) => {
-                        setAccountAddress(e.target.value)
-                        if (e.target.value.trim()) {
-                          setAccountAddressError(getAddressValidationError(e.target.value))
-                        } else {
-                          setAccountAddressError(null)
-                        }
+                        setRecoveryId(e.target.value)
+                        setRecoveryIdError(validateRecoveryId(e.target.value))
                       }}
-                      placeholder="Enter your account address..."
-                      className={`w-full bg-transparent border px-4 py-3 font-mono text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-accent focus:outline-none transition-colors ${accountAddressError ? "border-red-500/50" : "border-border/30"
-                        }`}
+                      placeholder="Enter recovery ID (e.g., 1)"
+                      className={`w-full bg-transparent border px-4 py-3 font-mono text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-accent focus:outline-none transition-colors ${
+                        recoveryIdError ? "border-red-500/50" : "border-border/30"
+                      }`}
                     />
-                    {accountAddressError && (
-                      <p className="font-mono text-xs text-red-500">
-                        {accountAddressError}
-                      </p>
+                    {recoveryIdError && (
+                      <p className="font-mono text-xs text-red-500">{recoveryIdError}</p>
                     )}
                     <p className="font-mono text-xs text-muted-foreground leading-relaxed">
-                      The account you lost access to
-                    </p>
-                  </div>
-
-                  {/* New Public Key */}
-                  <div className="space-y-2">
-                    <label className="font-mono text-xs uppercase tracking-[0.3em] text-muted-foreground">
-                      New Recovery Key
-                    </label>
-                    <input
-                      type="text"
-                      value={newPublicKey}
-                      onChange={(e) => {
-                        setNewPublicKey(e.target.value)
-                        if (e.target.value.trim()) {
-                          setNewPublicKeyError(getAddressValidationError(e.target.value))
-                        } else {
-                          setNewPublicKeyError(null)
-                        }
-                      }}
-                      placeholder="Enter your new public key..."
-                      className={`w-full bg-transparent border px-4 py-3 font-mono text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-accent focus:outline-none transition-colors ${newPublicKeyError ? "border-red-500/50" : "border-border/30"
-                        }`}
-                    />
-                    {newPublicKeyError && (
-                      <p className="font-mono text-xs text-red-500">
-                        {newPublicKeyError}
-                      </p>
-                    )}
-                    <p className="font-mono text-xs text-muted-foreground leading-relaxed">
-                      The new key that will replace your lost primary key
+                      The recovery ID from the initiation step
                     </p>
                   </div>
                 </div>
 
-                {/* Start Recovery Button */}
                 <div className="mt-8 pt-8 border-t border-border/30">
-                  {/* Error Display */}
                   {submitError && (
                     <div className="mb-6 p-4 border border-red-500/30 bg-red-500/5">
-                      <p className="font-mono text-xs text-red-500">
-                        {submitError}
-                      </p>
+                      <p className="font-mono text-xs text-red-500">{submitError}</p>
                     </div>
                   )}
 
                   <button
-                    onClick={handleStartRecovery}
-                    disabled={!accountAddress.trim() || !newPublicKey.trim() || isSubmitting || !!accountAddressError || !!newPublicKeyError}
-                    className="group inline-flex items-center gap-3 border border-foreground/20 px-8 py-4 font-mono text-xs uppercase tracking-widest text-foreground hover:border-accent hover:text-accent transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:border-foreground/20 disabled:hover:text-foreground"
+                    onClick={handleApprove}
+                    disabled={!recoveryId.trim() || isSubmitting || !!recoveryIdError}
+                    className="group inline-flex items-center gap-3 border border-foreground/20 px-8 py-4 font-mono text-xs uppercase tracking-widest text-foreground hover:border-accent hover:text-accent transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <ScrambleTextOnHover
-                      text={isSubmitting ? "Signing..." : "Start Recovery"}
+                      text={isSubmitting ? "Signing..." : "Approve Recovery"}
                       as="span"
                       duration={0.6}
                     />
@@ -458,67 +372,44 @@ export default function RecoveryPage() {
                       <BitmapChevron className="transition-transform duration-[400ms] ease-in-out group-hover:rotate-45" />
                     )}
                   </button>
-                  <p className="mt-4 font-mono text-xs text-muted-foreground leading-relaxed">
-                    {isSubmitting
-                      ? "Please sign the transaction in Casper Wallet..."
-                      : "Casper Wallet will pop up for signature"}
+                  <p className="mt-4 font-mono text-xs text-muted-foreground">
+                    {isSubmitting ? "Please sign in Casper Wallet..." : "Your approval will be recorded on-chain"}
                   </p>
                 </div>
               </div>
             )}
 
-            {/* Recovery Submitted Status */}
-            {(recoveryStatus === "submitted" || recoveryStatus === "confirmed") && (
-              <div className={`border p-6 md:p-8 ${recoveryStatus === "confirmed" ? "border-green-500/30 bg-green-500/5" : "border-accent/30 bg-accent/5"}`}>
-                <h3 className={`font-mono text-xs uppercase tracking-widest mb-4 ${recoveryStatus === "confirmed" ? "text-green-500" : "text-accent"}`}>
-                  {recoveryStatus === "confirmed" ? "Recovery Confirmed ✓" : "Recovery Initiated ⏳"}
+            {/* Approval Status */}
+            {(approvalStatus === "submitted" || approvalStatus === "confirmed") && (
+              <div className={`border p-6 md:p-8 ${
+                approvalStatus === "confirmed" ? "border-green-500/30 bg-green-500/5" : "border-accent/30 bg-accent/5"
+              }`}>
+                <h3 className={`font-mono text-xs uppercase tracking-widest mb-4 ${
+                  approvalStatus === "confirmed" ? "text-green-500" : "text-accent"
+                }`}>
+                  {approvalStatus === "confirmed" ? "Approval Confirmed ✓" : "Approval Submitted ⏳"}
                 </h3>
                 <div className="space-y-4">
                   <div className="grid grid-cols-1 gap-1">
                     <span className="font-mono text-xs uppercase tracking-[0.3em] text-muted-foreground">
-                      Account
+                      Recovery ID
                     </span>
-                    <span className="font-mono text-xs text-foreground/80 break-all">
-                      {accountAddress}
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-1 gap-1">
-                    <span className="font-mono text-xs uppercase tracking-[0.3em] text-muted-foreground">
-                      New Key
-                    </span>
-                    <span className="font-mono text-xs text-foreground/80 break-all">
-                      {newPublicKey}
-                    </span>
+                    <span className="font-mono text-xs text-foreground/80">{recoveryId}</span>
                   </div>
                   {deployHash && (
                     <div className="grid grid-cols-1 gap-1">
                       <span className="font-mono text-xs uppercase tracking-[0.3em] text-muted-foreground">
                         Deploy Hash
                       </span>
-                      <span className="font-mono text-xs text-foreground/80 break-all">
-                        {deployHash}
-                      </span>
+                      <span className="font-mono text-xs text-foreground/80 break-all">{deployHash}</span>
                     </div>
                   )}
                   <div className="pt-4 border-t border-accent/30">
                     <p className="font-mono text-sm text-foreground/80">
-                      {recoveryStatus === "confirmed"
-                        ? "Recovery proposal is now on-chain. Protectors can start approving."
+                      {approvalStatus === "confirmed"
+                        ? "Your approval has been recorded. Other guardians can now approve."
                         : "Waiting for network confirmation..."}
                     </p>
-                    {recoveryStatus === "confirmed" && (
-                      <div className="mt-4">
-                        <p className="font-mono text-xs text-muted-foreground mb-2">
-                          Share this page with your protectors so they can approve:
-                        </p>
-                        <a
-                          href="/approve"
-                          className="inline-flex items-center gap-2 font-mono text-xs text-accent hover:underline"
-                        >
-                          Go to Approval Page →
-                        </a>
-                      </div>
-                    )}
                   </div>
                 </div>
               </div>
@@ -527,57 +418,49 @@ export default function RecoveryPage() {
             {/* Info Panel */}
             <div className="border border-accent/30 bg-accent/5 p-6 md:p-8">
               <h3 className="font-mono text-xs uppercase tracking-widest text-accent mb-4">
-                Recovery Process
+                Guardian Approval Process
               </h3>
               <ul className="space-y-3">
                 <li className="font-mono text-sm text-foreground/80 flex items-start gap-3">
                   <span className="text-accent">01</span>
-                  <span>Alice signs recovery request with PROTECTOR key (weight 1)</span>
+                  <span>Recovery is initiated by the user or a helper</span>
                 </li>
                 <li className="font-mono text-sm text-foreground/80 flex items-start gap-3">
                   <span className="text-accent">02</span>
-                  <span>All 3 friends receive email notifications</span>
+                  <span>Each guardian independently approves using this page</span>
                 </li>
                 <li className="font-mono text-sm text-foreground/80 flex items-start gap-3">
                   <span className="text-accent">03</span>
-                  <span>Each friend approves (3 signatures: 1+1+1=3 weight)</span>
+                  <span>Contract tracks approval count and weights</span>
                 </li>
                 <li className="font-mono text-sm text-foreground/80 flex items-start gap-3">
                   <span className="text-accent">04</span>
-                  <span>Wait 30 days for safety period</span>
-                </li>
-                <li className="font-mono text-sm text-foreground/80 flex items-start gap-3">
-                  <span className="text-accent">05</span>
-                  <span>Backend executes key rotation (no signature needed)</span>
-                </li>
-                <li className="font-mono text-sm text-foreground/80 flex items-start gap-3">
-                  <span className="text-accent">06</span>
-                  <span>Old key removed, new key added - account recovered!</span>
+                  <span>Once threshold is met, key rotation can proceed</span>
                 </li>
               </ul>
             </div>
 
-            {/* Important Notice */}
+            {/* Security Notice */}
             <div className="border border-border/30 p-6 md:p-8">
               <h3 className="font-mono text-xs uppercase tracking-widest text-foreground mb-4">
-                Important Notes
+                Security Notes
               </h3>
               <ul className="space-y-3">
                 <li className="font-mono text-sm text-muted-foreground flex items-start gap-3">
                   <span className="text-accent">•</span>
-                  <span>You must borrow a protector key from one of your friends to sign this request</span>
+                  <span>Only registered guardians can approve recovery requests</span>
                 </li>
                 <li className="font-mono text-sm text-muted-foreground flex items-start gap-3">
                   <span className="text-accent">•</span>
-                  <span>Protector key has weight 1 - not enough alone, proves you have protector access</span>
+                  <span>Each guardian can only approve once per recovery</span>
                 </li>
                 <li className="font-mono text-sm text-muted-foreground flex items-start gap-3">
                   <span className="text-accent">•</span>
-                  <span>All 3 protectors must approve for recovery to proceed</span>
+                  <span>Verify the recovery ID with the account owner before approving</span>
                 </li>
                 <li className="font-mono text-sm text-muted-foreground flex items-start gap-3">
                   <span className="text-accent">•</span>
-                  <span>30-day waiting period cannot be bypassed (safety feature)</span>
+                  <span>Casper runtime enforces all signature requirements</span>
                 </li>
               </ul>
             </div>
@@ -585,17 +468,17 @@ export default function RecoveryPage() {
         </div>
       </section>
 
-      {/* Footer Info */}
+      {/* Footer */}
       <div className="relative z-10 px-6 md:px-28 py-8 border-t border-border/30">
         <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
           <div className="font-mono text-xs uppercase tracking-[0.3em] text-muted-foreground">
             SentinelX v0.1
           </div>
           <div className="flex items-center gap-6">
-            <a href="/#how-it-works" className="font-mono text-xs uppercase tracking-[0.3em] text-muted-foreground hover:text-foreground transition-colors">
-              How It Works
+            <a href="/recovery" className="font-mono text-xs uppercase tracking-[0.3em] text-muted-foreground hover:text-foreground transition-colors">
+              Recovery
             </a>
-            <a href="/dashboard" className="font-mono text-[10px] uppercase tracking-[0.3em] text-muted-foreground hover:text-foreground transition-colors">
+            <a href="/dashboard" className="font-mono text-xs uppercase tracking-[0.3em] text-muted-foreground hover:text-foreground transition-colors">
               Dashboard
             </a>
           </div>

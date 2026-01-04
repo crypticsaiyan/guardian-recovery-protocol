@@ -298,17 +298,45 @@ export default function DashboardPage() {
                 throw new Error("Casper Wallet not available")
             }
 
-            const unsignedDeploy = DeployUtil.deployFromJson(approveResult.data.deployJson).unwrap()
-            const unsignedDeployJson = DeployUtil.deployToJson(unsignedDeploy)
+            // Sign the deploy with Casper Wallet
+            const deployJson = approveResult.data.deployJson
+            const deployString = typeof deployJson === 'string' ? deployJson : JSON.stringify(deployJson)
 
-            const signedJson = await provider.signDeploy(unsignedDeployJson, publicKey)
-            const signedDeploy = DeployUtil.deployFromJson(signedJson).unwrap()
+            const response = await provider.sign(deployString, publicKey)
 
-            if (!signedDeploy) {
-                throw new Error("Failed to sign deploy")
+            if (response.cancelled) {
+                throw new Error("Sign request cancelled by user")
             }
 
-            const submitResult = await submitDeploy(JSON.stringify(DeployUtil.deployToJson(signedDeploy)))
+            const signatureHex = response.signatureHex
+            if (!signatureHex) {
+                throw new Error("Failed to get signature from wallet")
+            }
+
+            // Reconstruct the deploy from the JSON
+            const originalDeployJson = typeof deployJson === 'string' ? JSON.parse(deployJson) : deployJson
+            const deploy = DeployUtil.deployFromJson(originalDeployJson).unwrap()
+
+            // Get the public key to determine the signature algorithm
+            const { CLPublicKey } = await import("casper-js-sdk")
+            const pubKey = CLPublicKey.fromHex(publicKey)
+
+            // Casper Wallet returns the signature without the algorithm tag
+            // We need to prepend the tag: 01 for Ed25519, 02 for Secp256k1
+            const algorithmTag = pubKey.isEd25519() ? '01' : '02'
+            const fullSignature = algorithmTag + signatureHex
+
+            // Create a proper approval with hex strings
+            const approval = new DeployUtil.Approval()
+            approval.signer = pubKey.toHex()
+            approval.signature = fullSignature
+
+            // Add the approval to the deploy
+            deploy.approvals.push(approval)
+
+            // Submit signed deploy to the network
+            const signedDeployJson = DeployUtil.deployToJson(deploy)
+            const submitResult = await submitDeploy(JSON.stringify(signedDeployJson))
 
             if (!submitResult.success) {
                 throw new Error(submitResult.error || "Failed to submit deploy")
@@ -401,6 +429,12 @@ export default function DashboardPage() {
                         </a>
                         <a href="/recovery" className="font-mono text-xs uppercase tracking-[0.3em] text-muted-foreground hover:text-foreground transition-colors">
                             Recovery
+                        </a>
+                        <a href="/approve" className="font-mono text-xs uppercase tracking-[0.3em] text-muted-foreground hover:text-foreground transition-colors">
+                            Approve
+                        </a>
+                        <a href="/execute" className="font-mono text-xs uppercase tracking-[0.3em] text-muted-foreground hover:text-foreground transition-colors">
+                            Execute
                         </a>
                     </div>
                 </div>

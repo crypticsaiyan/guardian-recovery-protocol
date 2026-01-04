@@ -19,6 +19,9 @@ export const config = {
         recoveryRegistry: path.resolve(
             process.env.WASM_RECOVERY_REGISTRY_PATH || '../contracts/wasm/recovery_registry.wasm'
         ),
+        testContract: path.resolve(
+            process.env.WASM_TEST_CONTRACT_PATH || '../contracts/wasm/test_contract.wasm'
+        ),
         addKey: path.resolve(
             process.env.WASM_ADD_KEY_PATH || '../contracts/wasm/add_associated_key.wasm'
         ),

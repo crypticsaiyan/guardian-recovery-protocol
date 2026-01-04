@@ -184,6 +184,43 @@ export const queryGuardians = async (
 };
 
 /**
+ * Get recovery status by ID (NO TRANSACTION - direct state query)
+ */
+export const getRecoveryStatus = async (
+    recoveryId: string,
+    signerPublicKey: string
+): Promise<ApiResponse<{
+    recoveryId: string;
+    account: string;
+    newKey: string;
+    approvalCount: number;
+    isApproved: boolean;
+}>> => {
+    try {
+        const response = await apiClient.get(`/recovery/status/${recoveryId}`, {
+            params: { signerPublicKey }
+        });
+        return response.data;
+    } catch (error) {
+        return handleApiError(error);
+    }
+};
+
+/**
+ * Get active recovery for an account (NO TRANSACTION - direct state query)
+ */
+export const getActiveRecovery = async (
+    publicKey: string
+): Promise<ApiResponse<{ hasActiveRecovery: boolean; recoveryId: string | null }>> => {
+    try {
+        const response = await apiClient.get(`/recovery/active/${publicKey}`);
+        return response.data;
+    } catch (error) {
+        return handleApiError(error);
+    }
+};
+
+/**
  * @deprecated Use checkHasGuardians instead - this version requires a transaction
  * Check if account has protectors (OLD - requires transaction)
  */

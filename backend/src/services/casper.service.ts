@@ -47,16 +47,27 @@ export class CasperService {
         actionThresholds: { deployment: number; keyManagement: number };
     }> {
         const accountInfo = await this.getAccountInfo(publicKeyHex);
-        const account = accountInfo.Account;
+        
+        // Handle different response structures from Casper SDK
+        const account = accountInfo?.Account || accountInfo?.stored_value?.Account || accountInfo;
+        
+        if (!account) {
+            console.error('Account info structure:', JSON.stringify(accountInfo, null, 2));
+            throw new Error('Could not parse account info');
+        }
+
+        // associatedKeys can be either snake_case or camelCase
+        const associatedKeys = account.associatedKeys || account.associated_keys || [];
+        const actionThresholds = account.actionThresholds || account.action_thresholds || {};
 
         return {
-            associatedKeys: account.associated_keys.map((key: any) => ({
-                accountHash: key.account_hash,
+            associatedKeys: associatedKeys.map((key: any) => ({
+                accountHash: key.accountHash || key.account_hash,
                 weight: key.weight,
             })),
             actionThresholds: {
-                deployment: account.action_thresholds.deployment,
-                keyManagement: account.action_thresholds.key_management,
+                deployment: actionThresholds.deployment || 1,
+                keyManagement: actionThresholds.keyManagement || actionThresholds.key_management || 1,
             },
         };
     }
@@ -108,11 +119,11 @@ export class CasperService {
     async hasGuardians(publicKeyHex: string): Promise<boolean> {
         try {
             const publicKey = CLPublicKey.fromHex(publicKeyHex);
-            const accountHashBytes = publicKey.toAccountHash();
-            const accountHashHex = Buffer.from(accountHashBytes).toString('hex');
+            // AccountHash Display format is "account-hash-{hex}"
+            const accountHashStr = publicKey.toAccountHashStr();
 
-            // The contract stores: grp_init_{account_hash_hex} (no prefix)
-            const keyName = `grp_init_${accountHashHex}`;
+            // The contract stores: grp_init_{account_hash_display}
+            const keyName = `grp_init_${accountHashStr}`;
             const result = await this.queryAccountNamedKey(publicKeyHex, keyName);
 
             if (result && result.CLValue) {
@@ -131,11 +142,11 @@ export class CasperService {
     async getGuardians(publicKeyHex: string): Promise<string[]> {
         try {
             const publicKey = CLPublicKey.fromHex(publicKeyHex);
-            const accountHashBytes = publicKey.toAccountHash();
-            const accountHashHex = Buffer.from(accountHashBytes).toString('hex');
+            // AccountHash Display format is "account-hash-{hex}"
+            const accountHashStr = publicKey.toAccountHashStr();
 
-            // The contract stores: grp_guardians_{account_hash_hex} (no prefix)
-            const keyName = `grp_guardians_${accountHashHex}`;
+            // The contract stores: grp_guardians_{account_hash_display}
+            const keyName = `grp_guardians_${accountHashStr}`;
             const result = await this.queryAccountNamedKey(publicKeyHex, keyName);
 
             if (result && result.CLValue && Array.isArray(result.CLValue.data)) {
@@ -159,11 +170,11 @@ export class CasperService {
     async getThreshold(publicKeyHex: string): Promise<number> {
         try {
             const publicKey = CLPublicKey.fromHex(publicKeyHex);
-            const accountHashBytes = publicKey.toAccountHash();
-            const accountHashHex = Buffer.from(accountHashBytes).toString('hex');
+            // AccountHash Display format is "account-hash-{hex}"
+            const accountHashStr = publicKey.toAccountHashStr();
 
-            // The contract stores: grp_threshold_{account_hash_hex} (no prefix)
-            const keyName = `grp_threshold_${accountHashHex}`;
+            // The contract stores: grp_threshold_{account_hash_display}
+            const keyName = `grp_threshold_${accountHashStr}`;
             const result = await this.queryAccountNamedKey(publicKeyHex, keyName);
 
             if (result && result.CLValue) {
@@ -250,6 +261,68 @@ export class CasperService {
             };
         } catch (error) {
             console.error(`Error getting deploy status: ${error}`);
+            return null;
+        }
+    }
+
+    /**
+     * Get active recovery ID for an account
+     */
+    async getActiveRecovery(publicKeyHex: string): Promise<string | null> {
+        try {
+            const publicKey = CLPublicKey.fromHex(publicKeyHex);
+            // AccountHash Display format is "account-hash-{hex}"
+            const accountHashStr = publicKey.toAccountHashStr();
+
+            const keyName = `grp_active_${accountHashStr}`;
+            const result = await this.queryAccountNamedKey(publicKeyHex, keyName);
+
+            if (result && result.CLValue) {
+                return String(result.CLValue.data);
+            }
+            return null;
+        } catch (error) {
+            console.error(`Error getting active recovery: ${error}`);
+            return null;
+        }
+    }
+
+    /**
+     * Get recovery details by ID
+     */
+    async getRecoveryDetails(signerPublicKeyHex: string, recoveryId: string): Promise<{
+        account: string;
+        newKey: string;
+        approvalCount: number;
+        isApproved: boolean;
+    } | null> {
+        try {
+            // Recovery data is stored in the signer's account named keys
+            const accountKey = `grp_rec_${recoveryId}_account`;
+            const newKeyKey = `grp_rec_${recoveryId}_new_key`;
+            const approvalCountKey = `grp_rec_${recoveryId}_approval_count`;
+            const approvedKey = `grp_rec_${recoveryId}_approved`;
+
+            const [accountResult, newKeyResult, countResult, approvedResult] = await Promise.all([
+                this.queryAccountNamedKey(signerPublicKeyHex, accountKey),
+                this.queryAccountNamedKey(signerPublicKeyHex, newKeyKey),
+                this.queryAccountNamedKey(signerPublicKeyHex, approvalCountKey),
+                this.queryAccountNamedKey(signerPublicKeyHex, approvedKey),
+            ]);
+
+            if (!accountResult?.CLValue) {
+                return null;
+            }
+
+            return {
+                account: accountResult.CLValue.data ? 
+                    `account-hash-${Buffer.from(accountResult.CLValue.data).toString('hex')}` : '',
+                newKey: newKeyResult?.CLValue?.data || '',
+                approvalCount: Number(countResult?.CLValue?.data) || 0,
+                isApproved: approvedResult?.CLValue?.data === true,
+            };
+        } catch (error) {
+            console.error(`Error getting recovery details: ${error}`);
             return null;
         }
     }
