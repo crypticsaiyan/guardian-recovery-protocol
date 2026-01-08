@@ -693,7 +693,7 @@ export class CasperService {
 
     /**
      * Get all recoveries where the given public key is a guardian
-     * Iterates through all recoveries and checks if the wallet is a guardian for each
+     * Uses the contract's reverse mapping stored at gr{:?} key
      */
     async getRecoveriesForGuardian(guardianPublicKeyHex: string): Promise<{
         recoveryId: string;
@@ -711,10 +711,10 @@ export class CasperService {
                 return [];
             }
 
-            console.log('\n=== Getting Recoveries For Guardian ===');
+            console.log('\n=== Getting Recoveries For Guardian (Using Reverse Mapping) ===');
             console.log('Guardian Public Key:', guardianPublicKeyHex);
 
-            // Get guardian's account hash for comparison
+            // Get guardian's account hash for the contract key
             const guardianPubKey = CLPublicKey.fromHex(guardianPublicKeyHex);
             const guardianAccountHash = guardianPubKey.toAccountHash();
             const guardianAccountHashHex = Buffer.from(guardianAccountHash).toString('hex');
@@ -723,70 +723,63 @@ export class CasperService {
             console.log('Guardian Account Hash Hex:', guardianAccountHashHex);
             console.log('Guardian Debug Format:', guardianDebugFormat);
 
-            // Get total recovery count from contract
-            const countResult = await this.queryContractDictionary(contractHash, 'd', 'c');
-            console.log('Count RAW result:', JSON.stringify(countResult, null, 2));
+            // Query the reverse mapping: gr{:?} contains the list of recovery IDs for this guardian
+            const grKey = `gr${guardianDebugFormat}`;
+            console.log('Querying dictionary key:', grKey);
 
-            const totalCount = countResult?.stored_value?.CLValue?.data;
-            let count = 0;
-
-            if (totalCount) {
-                if (typeof totalCount === 'object' && totalCount !== null) {
-                    count = parseInt(totalCount.toString(), 10);
-                } else {
-                    count = Number(totalCount);
-                }
-            }
-
-            console.log('Total recovery count (parsed):', count);
-
-            // Also try to check if there's an active recovery for the guardian's account (a{:?} key)
-            console.log('\n=== Checking Active Recovery for Guardian Account ===');
-            const activeRecoveryResult = await this.queryContractDictionary(
-                contractHash, 'd', `a${guardianDebugFormat}`
+            const recoveryIdsResult = await this.queryContractDictionary(
+                contractHash, 'd', grKey
             );
-            console.log('Active recovery for guardian account:', JSON.stringify(activeRecoveryResult?.stored_value?.CLValue?.data));
+            console.log('Recovery IDs raw result:', JSON.stringify(recoveryIdsResult, null, 2));
 
-            // Log ALL recoveries in the contract for debugging
-            // Force check at least 5 slots to see if there are hidden recoveries
-            const checkCount = Math.max(count, 5);
-            console.log(`\n=== ALL RECOVERIES IN CONTRACT (Checking first ${checkCount} slots) ===`);
-
-            for (let i = 1; i <= checkCount; i++) {
-                const raResult = await this.queryContractDictionary(contractHash, 'd', `ra${i}`);
-                const rkResult = await this.queryContractDictionary(contractHash, 'd', `rk${i}`);
-                const rcResult = await this.queryContractDictionary(contractHash, 'd', `rc${i}`);
-                const roResult = await this.queryContractDictionary(contractHash, 'd', `ro${i}`);
-
-                const raData = raResult?.stored_value?.CLValue?.data;
-                let targetHex = 'NOT FOUND';
-                if (raData) {
-                    if (typeof raData === 'string') {
-                        targetHex = raData;
-                    } else if (Array.isArray(raData)) {
-                        targetHex = Buffer.from(raData).toString('hex');
-                    } else if (raData?.data) {
-                        targetHex = Buffer.from(raData.data).toString('hex');
-                    }
+            // Debug the object structure
+            if (recoveryIdsResult) {
+                console.log('Debug - Type:', typeof recoveryIdsResult);
+                console.log('Debug - Keys:', Object.keys(recoveryIdsResult));
+                // @ts-ignore
+                if (recoveryIdsResult.CLValue) {
+                    // @ts-ignore
+                    console.log('Debug - CLValue Type:', typeof recoveryIdsResult.CLValue);
+                    // @ts-ignore
+                    console.log('Debug - CLValue IsArray:', Array.isArray(recoveryIdsResult.CLValue));
                 }
-
-                const rkData = rkResult?.stored_value?.CLValue?.data;
-                let newKeyHex = 'NOT FOUND';
-                if (rkData) {
-                    if (typeof rkData === 'string') {
-                        newKeyHex = rkData;
-                    } else if (Array.isArray(rkData)) {
-                        newKeyHex = Buffer.from(rkData).toString('hex');
-                    }
-                }
-
-                console.log(`Recovery #${i}:`);
-                console.log(`  Target Account: ${targetHex}`);
-                console.log(`  New Key: ${newKeyHex}`);
-                console.log(`  Approval Count: ${rcResult?.stored_value?.CLValue?.data || 0}`);
-                console.log(`  Is Approved: ${roResult?.stored_value?.CLValue?.data || false}`);
             }
-            console.log('=================================\n');
+
+            // Handle multiple possible response structures:
+            // 1. { CLValue: [...] } - direct CLValue
+            // 2. { stored_value: { CLValue: { data: [...] } } } - wrapped format
+            let recoveryIdsData: any[] | undefined;
+
+            if (recoveryIdsResult?.CLValue && Array.isArray(recoveryIdsResult.CLValue)) {
+                // Direct CLValue array format
+                recoveryIdsData = recoveryIdsResult.CLValue;
+                console.log('Found recovery IDs in direct CLValue format:', recoveryIdsData);
+            } else if (recoveryIdsResult?.stored_value?.CLValue?.data) {
+                // Wrapped format
+                recoveryIdsData = recoveryIdsResult.stored_value.CLValue.data;
+                console.log('Found recovery IDs in wrapped format:', recoveryIdsData);
+            } else if (Array.isArray(recoveryIdsResult)) {
+                // Raw array format
+                recoveryIdsData = recoveryIdsResult;
+                console.log('Found recovery IDs as raw array:', recoveryIdsData);
+            }
+
+            if (!recoveryIdsData || !Array.isArray(recoveryIdsData) || recoveryIdsData.length === 0) {
+                console.log('No recoveries found for this guardian - data is:', recoveryIdsData);
+                console.log('========================================\n');
+                return [];
+            }
+
+            // Parse recovery IDs from U256 values
+            const recoveryIds: string[] = recoveryIdsData.map((id: any) => {
+                if (typeof id === 'object' && id !== null) {
+                    // U256 might be stored as an object
+                    return id.toString();
+                }
+                return String(id);
+            });
+
+            console.log('Found recovery IDs:', recoveryIds);
 
             const results: {
                 recoveryId: string;
@@ -798,31 +791,32 @@ export class CasperService {
                 alreadyApproved: boolean;
             }[] = [];
 
-            // Iterate through all recovery IDs
-            for (let id = 1; id <= count; id++) {
-                const idStr = id.toString();
-                console.log(`\n--- Checking Recovery ${idStr} ---`);
+            // Fetch details for each recovery ID
+            for (const idStr of recoveryIds) {
+                console.log(`\n--- Fetching Recovery ${idStr} Details ---`);
 
-                // Get target account for this recovery (stored as AccountHash bytes)
-                const accResult = await this.queryContractDictionary(contractHash, 'd', `ra${idStr}`);
-                console.log('ra result:', JSON.stringify(accResult?.stored_value?.CLValue));
-
-                if (!accResult?.stored_value?.CLValue?.data) {
-                    console.log('Recovery not found, skipping');
+                // Check if recovery is finalized (skip if it is)
+                const finalizedResult = await this.queryContractDictionary(contractHash, 'd', `rf${idStr}`);
+                if (finalizedResult?.stored_value?.CLValue?.data === true) {
+                    console.log('Recovery is finalized, skipping');
                     continue;
                 }
 
-                // Parse the AccountHash - it's stored as byte array
+                // Get target account for this recovery
+                const accResult = await this.queryContractDictionary(contractHash, 'd', `ra${idStr}`);
+                if (!accResult?.stored_value?.CLValue?.data) {
+                    console.log('Recovery account not found, skipping');
+                    continue;
+                }
+
+                // Parse the AccountHash
                 const targetAccountData = accResult.stored_value.CLValue.data;
                 let targetAccountHex: string;
-
                 if (typeof targetAccountData === 'string') {
                     targetAccountHex = targetAccountData;
                 } else if (Array.isArray(targetAccountData)) {
-                    // It's a byte array
                     targetAccountHex = Buffer.from(targetAccountData).toString('hex');
                 } else if (targetAccountData?.data) {
-                    // It might be wrapped in a data property
                     targetAccountHex = Buffer.from(targetAccountData.data).toString('hex');
                 } else {
                     targetAccountHex = Buffer.from(targetAccountData).toString('hex');
@@ -830,52 +824,8 @@ export class CasperService {
 
                 const targetDebugFormat = `AccountHash(${targetAccountHex})`;
                 console.log('Target Account Hex:', targetAccountHex);
-                console.log('Target Debug Format:', targetDebugFormat);
 
-                // Get guardians for this account using the debug format key
-                const guardiansResult = await this.queryContractDictionary(
-                    contractHash, 'd', `g${targetDebugFormat}`
-                );
-                console.log('Guardians result:', JSON.stringify(guardiansResult?.stored_value?.CLValue?.data));
-
-                if (!guardiansResult?.stored_value?.CLValue?.data) {
-                    console.log('No guardians found for this account, skipping');
-                    continue;
-                }
-
-                const guardians = guardiansResult.stored_value.CLValue.data;
-                if (!Array.isArray(guardians)) {
-                    console.log('Guardians data is not an array, skipping');
-                    continue;
-                }
-
-                console.log('Found', guardians.length, 'guardians');
-
-                // Check if connected wallet is a guardian
-                // Guardians are stored as AccountHash bytes, need to convert to hex for comparison
-                const isGuardian = guardians.some((g: any) => {
-                    let gHex: string;
-                    if (typeof g === 'string') {
-                        gHex = g;
-                    } else if (Array.isArray(g)) {
-                        gHex = Buffer.from(g).toString('hex');
-                    } else if (g?.data) {
-                        gHex = Buffer.from(g.data).toString('hex');
-                    } else {
-                        gHex = Buffer.from(g).toString('hex');
-                    }
-                    console.log('  Comparing guardian:', gHex, 'with', guardianAccountHashHex);
-                    return gHex.toLowerCase() === guardianAccountHashHex.toLowerCase();
-                });
-
-                if (!isGuardian) {
-                    console.log('Not a guardian for this account, skipping');
-                    continue;
-                }
-
-                console.log('✓ Guardian IS a protector for this recovery');
-
-                // Get recovery details
+                // Get recovery details in parallel
                 const [newKeyResult, approvalCountResult, approvedResult, thresholdResult] = await Promise.all([
                     this.queryContractDictionary(contractHash, 'd', `rk${idStr}`),
                     this.queryContractDictionary(contractHash, 'd', `rc${idStr}`),
@@ -890,6 +840,7 @@ export class CasperService {
                 const alreadyApproved = approvedByGuardianResult?.stored_value?.CLValue?.data === true;
                 console.log('Already approved by this guardian:', alreadyApproved);
 
+                // Parse new key
                 const newKeyData = newKeyResult?.stored_value?.CLValue?.data;
                 let newKeyHex: string | null = null;
                 if (newKeyData) {
@@ -913,7 +864,7 @@ export class CasperService {
                 });
             }
 
-            console.log(`\nFound ${results.length} recoveries for this guardian`);
+            console.log(`\nFound ${results.length} active recoveries for this guardian`);
             console.log('========================================\n');
 
             return results;

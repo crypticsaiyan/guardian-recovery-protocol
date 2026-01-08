@@ -1,4 +1,5 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { CLPublicKey } from 'casper-js-sdk';
 
 // Supabase configuration - loaded lazily
 // Use service role key for backend (bypasses RLS)
@@ -21,8 +22,24 @@ function getSupabaseClient(): SupabaseClient | null {
     return supabaseClient;
 }
 
+/**
+ * Convert public key to account hash hex (lowercase for consistent matching)
+ */
+function publicKeyToAccountHash(publicKeyHex: string): string {
+    try {
+        const publicKey = CLPublicKey.fromHex(publicKeyHex);
+        const accountHash = publicKey.toAccountHash();
+        // Store as lowercase for consistent matching with contract data
+        return Buffer.from(accountHash).toString('hex').toLowerCase();
+    } catch (error) {
+        console.error('Error converting public key to account hash:', error);
+        return '';
+    }
+}
+
 export interface UserRecord {
     public_key: string;
+    account_hash?: string;
     email: string | null;
     created_at?: string;
 }
@@ -172,12 +189,16 @@ export const submitUserEmail = async (publicKey: string, email: string): Promise
             return { success: false, message: 'Email service not configured' };
         }
 
+        // Calculate account hash from public key for lookup by guardians
+        const accountHash = publicKeyToAccountHash(publicKey);
+
         // Use upsert to insert or update the user record
         const { error } = await supabase
             .from('user')
             .upsert(
                 {
                     public_key: publicKey,
+                    account_hash: accountHash,
                     email: email
                 },
                 {
@@ -197,6 +218,35 @@ export const submitUserEmail = async (publicKey: string, email: string): Promise
             success: false,
             message: error instanceof Error ? error.message : 'Unknown error occurred'
         };
+    }
+};
+
+/**
+ * Get email by account hash (for looking up guardian emails)
+ * @param accountHashHex - The account hash hex string
+ * @returns email if found, null otherwise
+ */
+export const getEmailByAccountHash = async (accountHashHex: string): Promise<string | null> => {
+    try {
+        const supabase = getSupabaseClient();
+        if (!supabase) {
+            return null;
+        }
+
+        const { data, error } = await supabase
+            .from('user')
+            .select('email')
+            .eq('account_hash', accountHashHex)
+            .single();
+
+        if (error || !data?.email) {
+            return null;
+        }
+
+        return data.email;
+    } catch (error) {
+        console.error('Error getting email by account hash:', error);
+        return null;
     }
 };
 

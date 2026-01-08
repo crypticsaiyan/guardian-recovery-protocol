@@ -68,6 +68,11 @@ API Endpoints:
   User (Email):
   GET  /api/user/:pubkey/email      - Check if user has email
   POST /api/user/email              - Submit user email
+
+  Notifications:
+  POST /api/recovery/notify-guardians - Send email to guardians
+
+Email: ${process.env.SMTP_USER ? '✓ Configured' : '⚠ Not configured'}
 `);
 });
 
