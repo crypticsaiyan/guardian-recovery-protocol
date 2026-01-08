@@ -14,7 +14,7 @@ import {
   isCasperWalletInstalled,
   getProvider
 } from "@/lib/casper-wallet"
-import { initiateRecovery, submitDeploy, getDeployStatus, getRecoveryById } from "@/lib/api"
+import { initiateRecovery, submitDeploy, getDeployStatus, getRecoveryById, notifyGuardiansOfRecovery } from "@/lib/api"
 import { isValidCasperAddress, getAddressValidationError } from "@/lib/validation"
 import gsap from "gsap"
 import { ScrollTrigger } from "gsap/ScrollTrigger"
@@ -180,6 +180,25 @@ export default function RecoveryPage() {
           if (result.data.status === "success") {
             console.log("Deploy succeeded!")
             setRecoveryStatus("confirmed")
+
+            // Send email notifications to guardians
+            try {
+              console.log("Sending email notifications to guardians...")
+              const notifyResult = await notifyGuardiansOfRecovery({
+                targetAccount: accountAddress.trim(),
+                newPublicKey: newPublicKey.trim(),
+                initiatorPublicKey: guardianKey,
+                recoveryId: deployHash,
+              })
+              console.log("Email notification result:", notifyResult)
+              if (notifyResult.success && notifyResult.data) {
+                console.log(`Emails sent: ${notifyResult.data.emailsSent}, skipped: ${notifyResult.data.emailsSkipped}`)
+              }
+            } catch (notifyError) {
+              console.error("Error sending guardian notifications:", notifyError)
+              // Don't fail the recovery if email notification fails
+            }
+
             // Polling will stop because status is no longer "submitted"
           } else if (result.data.status === "failed") {
             console.log("Deploy failed:", result.data.errorMessage)
@@ -200,7 +219,7 @@ export default function RecoveryPage() {
     // Continue polling every 5 seconds
     const interval = setInterval(pollStatus, 5000)
     return () => clearInterval(interval)
-  }, [deployHash, recoveryStatus])
+  }, [deployHash, recoveryStatus, accountAddress, newPublicKey, guardianKey])
 
   useEffect(() => {
     if (!sectionRef.current || !formRef.current) return
