@@ -485,6 +485,37 @@ export const checkHealth = async (): Promise<boolean> => {
     }
 };
 
+// ==================== GUARDIAN NOTIFICATIONS ====================
+
+export interface NotifyGuardiansResponse {
+    emailsSent: number;
+    emailsFailed: number;
+    emailsSkipped: number;
+    message: string;
+}
+
+/**
+ * Notify guardians via email about a recovery request
+ * Called after recovery is successfully initiated on-chain
+ * Backend automatically fetches guardian account hashes from the contract
+ */
+export const notifyGuardiansOfRecovery = async (params: {
+    targetAccount: string;
+    newPublicKey: string;
+    initiatorPublicKey?: string;
+    recoveryId?: string | number;
+}): Promise<ApiResponse<NotifyGuardiansResponse>> => {
+    try {
+        const response = await apiClient.post('/recovery/notify-guardians', params);
+        return {
+            success: true,
+            data: response.data.data,
+        };
+    } catch (error) {
+        return handleApiError(error);
+    }
+};
+
 // ==================== ERROR HANDLING ====================
 
 function handleApiError<T>(error: unknown): ApiResponse<T> {

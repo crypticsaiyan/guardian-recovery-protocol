@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { contractService, casperService } from '../services';
+import { contractService, casperService, notifyGuardiansOfRecovery } from '../services';
 import { ApiResponse } from '../types';
 
 const router = Router();
@@ -530,6 +530,229 @@ router.get('/for-guardian/:publicKey', async (req: Request, res: Response) => {
         res.status(500).json({
             success: false,
             error: `Failed to get recoveries for guardian: ${error}`,
+        } as ApiResponse);
+    }
+});
+
+/**
+ * POST /recovery/notify-guardians
+ * Send email notifications to guardians about a recovery request
+ * Called by frontend after recovery deploy is confirmed successful
+ */
+router.post('/notify-guardians', async (req: Request, res: Response) => {
+    try {
+        const { targetAccount, newPublicKey, initiatorPublicKey, recoveryId } = req.body;
+
+        console.log('\n=== Notify Guardians Request ===');
+        console.log('Target Account:', targetAccount);
+        console.log('Recovery ID:', recoveryId);
+        console.log('Initiator Public Key:', initiatorPublicKey);
+
+        if (!targetAccount || !newPublicKey) {
+            return res.status(400).json({
+                success: false,
+                error: 'Missing required fields: targetAccount, newPublicKey',
+            } as ApiResponse);
+        }
+
+        const contractHash = process.env.RECOVERY_REGISTRY_HASH;
+        if (!contractHash) {
+            return res.status(500).json({
+                success: false,
+                error: 'Contract hash not configured',
+            } as ApiResponse);
+        }
+
+        // Get guardian account hashes from the contract
+        const { CLPublicKey } = await import('casper-js-sdk');
+        const targetPubKey = CLPublicKey.fromHex(targetAccount);
+        const targetAccountHash = targetPubKey.toAccountHash();
+        const targetAccountHashHex = Buffer.from(targetAccountHash).toString('hex');
+        const debugFormat = `AccountHash(${targetAccountHashHex})`;
+
+        console.log('Querying guardians from contract for:', debugFormat);
+
+        const guardiansResult = await casperService.queryContractDictionary(
+            contractHash, 'd', `g${debugFormat}`
+        );
+
+        // Handle multiple possible response structures for guardians data
+        let guardiansData: any[] | undefined;
+
+        if (guardiansResult?.CLValue && Array.isArray(guardiansResult.CLValue)) {
+            // Direct CLValue array format
+            guardiansData = guardiansResult.CLValue;
+        } else if (guardiansResult?.CLValue?.data && Array.isArray(guardiansResult.CLValue.data)) {
+            // CLValue with data property
+            guardiansData = guardiansResult.CLValue.data;
+        } else if (guardiansResult?.stored_value?.CLValue?.data && Array.isArray(guardiansResult.stored_value.CLValue.data)) {
+            // Wrapped format
+            guardiansData = guardiansResult.stored_value.CLValue.data;
+        } else if (Array.isArray(guardiansResult)) {
+            // Raw array format
+            guardiansData = guardiansResult;
+        }
+
+        console.log('Parsed guardians data:', JSON.stringify(guardiansData));
+
+        if (!guardiansData || !Array.isArray(guardiansData)) {
+            return res.json({
+                success: true,
+                data: {
+                    emailsSent: 0,
+                    emailsFailed: 0,
+                    emailsSkipped: 0,
+                    message: 'No guardians found for this account',
+                },
+            } as ApiResponse);
+        }
+
+        // Convert guardian data to account hashes (lowercase for consistent matching)
+        const guardianAccountHashes: string[] = guardiansData.map((g: any) => {
+            let hash: string;
+            if (typeof g === 'string') hash = g;
+            else if (Array.isArray(g)) hash = Buffer.from(g).toString('hex');
+            else if (g?.data) hash = Buffer.from(g.data).toString('hex');
+            else hash = Buffer.from(g).toString('hex');
+            return hash.toLowerCase(); // Normalize to lowercase
+        });
+
+        console.log('Found guardian account hashes:', guardianAccountHashes);
+        guardianAccountHashes.forEach((h, i) => console.log(`  Guardian ${i + 1}: ${h}`));
+
+        // Calculate initiator's account hash to exclude them from notifications
+        let initiatorAccountHash: string | undefined;
+        if (initiatorPublicKey) {
+            try {
+                const initiatorPubKey = CLPublicKey.fromHex(initiatorPublicKey);
+                initiatorAccountHash = Buffer.from(initiatorPubKey.toAccountHash()).toString('hex');
+            } catch (e) {
+                console.warn('Could not convert initiator public key to account hash:', e);
+            }
+        }
+
+        // Send notification emails
+        const result = await notifyGuardiansOfRecovery({
+            targetAccountHex: targetAccount,
+            newPublicKeyHex: newPublicKey,
+            guardianAccountHashes,
+            initiatorAccountHash,
+            recoveryId: recoveryId?.toString(),
+        });
+
+        res.json({
+            success: true,
+            data: {
+                emailsSent: result.sent,
+                emailsFailed: result.failed,
+                emailsSkipped: result.skipped,
+                message: result.sent > 0
+                    ? `Notifications sent to ${result.sent} guardian(s)`
+                    : 'No guardians have registered email addresses',
+            },
+        } as ApiResponse);
+    } catch (error) {
+        console.error('Error notifying guardians:', error);
+        res.status(500).json({
+            success: false,
+            error: `Failed to notify guardians: ${error}`,
+        } as ApiResponse);
+    }
+});
+
+/**
+ * POST /recovery/notify-simple
+ * Simple endpoint to notify guardians with just target account
+ * Fetches guardians from contract and sends emails
+ */
+router.post('/notify-simple', async (req, res) => {
+    try {
+        const { targetAccount } = req.body;
+
+        if (!targetAccount) {
+            return res.status(400).json({
+                success: false,
+                error: 'Missing required fields: targetAccount',
+            } as ApiResponse);
+        }
+
+        const contractHash = process.env.RECOVERY_REGISTRY_HASH;
+        if (!contractHash) {
+            return res.status(500).json({
+                success: false,
+                error: 'Recovery contract hash not configured',
+            } as ApiResponse);
+        }
+
+        // 1. Get guardians for this account from contract
+        // Format: g{AccountHash}
+        const { CLPublicKey } = await import('casper-js-sdk');
+        const targetAccountHash = CLPublicKey.fromHex(targetAccount).toAccountHash();
+        const targetAccountHashHex = Buffer.from(targetAccountHash).toString('hex');
+        const debugFormat = `AccountHash(${targetAccountHashHex})`;
+
+        console.log('Querying guardians from contract for:', debugFormat);
+
+        // Same robust logic as notify-guardians
+        const guardiansResult = await casperService.queryContractDictionary(
+            contractHash, 'd', `g${debugFormat}`
+        );
+
+        // Handle multiple possible response structures for guardians data
+        let guardiansData: any[] | undefined;
+
+        if (guardiansResult?.CLValue && Array.isArray(guardiansResult.CLValue)) {
+            guardiansData = guardiansResult.CLValue;
+        } else if (guardiansResult?.CLValue?.data && Array.isArray(guardiansResult.CLValue.data)) {
+            guardiansData = guardiansResult.CLValue.data;
+        } else if (guardiansResult?.stored_value?.CLValue?.data && Array.isArray(guardiansResult.stored_value.CLValue.data)) {
+            guardiansData = guardiansResult.stored_value.CLValue.data;
+        } else if (Array.isArray(guardiansResult)) {
+            guardiansData = guardiansResult;
+        }
+
+        if (!guardiansData || !Array.isArray(guardiansData)) {
+            return res.json({
+                success: true,
+                data: {
+                    emailsSent: 0,
+                    message: 'No guardians found for this account',
+                },
+            } as ApiResponse);
+        }
+
+        // Convert guardian data to account hashes
+        const guardianAccountHashes: string[] = guardiansData.map((g: any) => {
+            let hash: string;
+            if (typeof g === 'string') hash = g;
+            else if (Array.isArray(g)) hash = Buffer.from(g).toString('hex');
+            else if (g?.data) hash = Buffer.from(g.data).toString('hex');
+            else hash = Buffer.from(g).toString('hex');
+            return hash.toLowerCase();
+        });
+
+        console.log('Found guardian account hashes:', guardianAccountHashes);
+
+        // Send notification emails (initiator excluded if provided, but optional here)
+        const result = await notifyGuardiansOfRecovery({
+            targetAccountHex: targetAccount,
+            guardianAccountHashes,
+        });
+
+        res.json({
+            success: true,
+            data: {
+                emailsSent: result.sent,
+                emailsFailed: result.failed,
+                emailsSkipped: result.skipped,
+                guardianCount: guardianAccountHashes.length,
+            },
+        } as ApiResponse);
+    } catch (error) {
+        console.error('Error in notify-simple:', error);
+        res.status(500).json({
+            success: false,
+            error: `Failed to notify guardians: ${error}`,
         } as ApiResponse);
     }
 });
