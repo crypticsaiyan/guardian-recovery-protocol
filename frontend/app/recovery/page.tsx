@@ -14,7 +14,7 @@ import {
   isCasperWalletInstalled,
   getProvider
 } from "@/lib/casper-wallet"
-import { initiateRecovery, submitDeploy, getDeployStatus } from "@/lib/api"
+import { initiateRecovery, submitDeploy, getDeployStatus, getRecoveryById } from "@/lib/api"
 import { isValidCasperAddress, getAddressValidationError } from "@/lib/validation"
 import gsap from "gsap"
 import { ScrollTrigger } from "gsap/ScrollTrigger"
@@ -39,6 +39,108 @@ export default function RecoveryPage() {
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [deployHash, setDeployHash] = useState<string | null>(null)
   const [recoveryId, setRecoveryId] = useState<string | null>(null)
+
+  // Initiated recoveries stored in localStorage
+  interface InitiatedRecovery {
+    deployHash: string
+    recoveryId?: string
+    targetAccount: string
+    newPublicKey: string
+    initiatedAt: string
+    deployStatus: 'pending' | 'success' | 'failed'
+    approvalCount?: number
+    isApproved?: boolean
+  }
+  const [initiatedRecoveries, setInitiatedRecoveries] = useState<InitiatedRecovery[]>([])
+
+  // Local storage key for this wallet
+  const getStorageKey = (walletKey: string) => `sentinelx_recoveries_${walletKey}`
+
+  // Load initiated recoveries from localStorage
+  useEffect(() => {
+    if (!guardianKey) return
+
+    const storageKey = getStorageKey(guardianKey)
+    const stored = localStorage.getItem(storageKey)
+    if (stored) {
+      try {
+        const parsed = JSON.parse(stored) as InitiatedRecovery[]
+        setInitiatedRecoveries(parsed)
+      } catch (e) {
+        console.error('Failed to parse stored recoveries:', e)
+      }
+    }
+  }, [guardianKey])
+
+  // Poll for status updates on initiated recoveries
+  useEffect(() => {
+    if (initiatedRecoveries.length === 0) return
+
+    const pollStatuses = async () => {
+      let updated = false
+      const updatedRecoveries = await Promise.all(
+        initiatedRecoveries.map(async (recovery) => {
+          // Skip if already finalized
+          if (recovery.deployStatus === 'success' || recovery.deployStatus === 'failed') {
+            // But still check contract for approval status if we have recoveryId
+            if (recovery.recoveryId) {
+              try {
+                const details = await getRecoveryById(recovery.recoveryId)
+                if (details.success && details.data) {
+                  return {
+                    ...recovery,
+                    approvalCount: details.data.approvalCount,
+                    isApproved: details.data.isApproved,
+                  }
+                }
+              } catch (e) {
+                console.error('Error fetching recovery details:', e)
+              }
+            }
+            return recovery
+          }
+
+          // Check deploy status
+          try {
+            const result = await getDeployStatus(recovery.deployHash)
+            if (result.success && result.data) {
+              if (result.data.status !== recovery.deployStatus) {
+                updated = true
+                return {
+                  ...recovery,
+                  deployStatus: result.data.status,
+                }
+              }
+            }
+          } catch (e) {
+            console.error('Error polling recovery status:', e)
+          }
+          return recovery
+        })
+      )
+
+      if (updated) {
+        setInitiatedRecoveries(updatedRecoveries)
+        // Save to localStorage
+        if (guardianKey) {
+          localStorage.setItem(getStorageKey(guardianKey), JSON.stringify(updatedRecoveries))
+        }
+      }
+    }
+
+    pollStatuses()
+    const interval = setInterval(pollStatuses, 10000) // Poll every 10 seconds
+    return () => clearInterval(interval)
+  }, [initiatedRecoveries, guardianKey])
+
+  // Helper to save a new recovery to localStorage
+  const saveRecoveryToStorage = (recovery: InitiatedRecovery) => {
+    if (!guardianKey) return
+    const storageKey = getStorageKey(guardianKey)
+    const current = [...initiatedRecoveries, recovery]
+    setInitiatedRecoveries(current)
+    localStorage.setItem(storageKey, JSON.stringify(current))
+  }
 
   // Check wallet connection on mount
   useEffect(() => {
@@ -242,9 +344,21 @@ export default function RecoveryPage() {
       }
 
       // Store deploy hash and update status
-      setDeployHash(submitResult.data?.deployHash || null)
-      setRecoveryId(submitResult.data?.deployHash || null) // Using deploy hash as recovery ID for now
+      const newDeployHash = submitResult.data?.deployHash || null
+      setDeployHash(newDeployHash)
+      setRecoveryId(newDeployHash) // Using deploy hash as recovery ID for now
       setRecoveryStatus("submitted")
+
+      // Save to localStorage for recovery history
+      if (newDeployHash) {
+        saveRecoveryToStorage({
+          deployHash: newDeployHash,
+          targetAccount: accountAddress.trim(),
+          newPublicKey: newPublicKey.trim(),
+          initiatedAt: new Date().toISOString(),
+          deployStatus: 'pending',
+        })
+      }
 
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "Failed to start recovery"
@@ -599,63 +713,145 @@ export default function RecoveryPage() {
               </div>
             )}
 
-            {/* Info Panel */}
-            <div className="border border-accent/30 bg-accent/5 p-6 md:p-8">
-              <h3 className="font-mono text-xs uppercase tracking-widest text-accent mb-4">
-                Recovery Process
-              </h3>
-              <ul className="space-y-3">
-                <li className="font-mono text-sm text-foreground/80 flex items-start gap-3">
-                  <span className="text-accent">01</span>
-                  <span>Alice signs recovery request with PROTECTOR key (weight 1)</span>
-                </li>
-                <li className="font-mono text-sm text-foreground/80 flex items-start gap-3">
-                  <span className="text-accent">02</span>
-                  <span>All 3 friends receive email notifications</span>
-                </li>
-                <li className="font-mono text-sm text-foreground/80 flex items-start gap-3">
-                  <span className="text-accent">03</span>
-                  <span>Each friend approves (3 signatures: 1+1+1=3 weight)</span>
-                </li>
-                <li className="font-mono text-sm text-foreground/80 flex items-start gap-3">
-                  <span className="text-accent">04</span>
-                  <span>Wait 30 days for safety period</span>
-                </li>
-                <li className="font-mono text-sm text-foreground/80 flex items-start gap-3">
-                  <span className="text-accent">05</span>
-                  <span>Backend executes key rotation (no signature needed)</span>
-                </li>
-                <li className="font-mono text-sm text-foreground/80 flex items-start gap-3">
-                  <span className="text-accent">06</span>
-                  <span>Old key removed, new key added - account recovered!</span>
-                </li>
-              </ul>
-            </div>
+            {/* My Initiated Recoveries */}
+            {isConnected && (
+              <div className="border border-border/30 p-6 md:p-8">
+                <h3 className="font-mono text-xs uppercase tracking-widest text-foreground mb-6">
+                  My Initiated Recoveries
+                </h3>
 
-            {/* Important Notice */}
-            <div className="border border-border/30 p-6 md:p-8">
-              <h3 className="font-mono text-xs uppercase tracking-widest text-foreground mb-4">
-                Important Notes
-              </h3>
-              <ul className="space-y-3">
-                <li className="font-mono text-sm text-muted-foreground flex items-start gap-3">
-                  <span className="text-accent">•</span>
-                  <span>You must borrow a protector key from one of your friends to sign this request</span>
-                </li>
-                <li className="font-mono text-sm text-muted-foreground flex items-start gap-3">
-                  <span className="text-accent">•</span>
-                  <span>Protector key has weight 1 - not enough alone, proves you have protector access</span>
-                </li>
-                <li className="font-mono text-sm text-muted-foreground flex items-start gap-3">
-                  <span className="text-accent">•</span>
-                  <span>All 3 protectors must approve for recovery to proceed</span>
-                </li>
-                <li className="font-mono text-sm text-muted-foreground flex items-start gap-3">
-                  <span className="text-accent">•</span>
-                  <span>30-day waiting period cannot be bypassed (safety feature)</span>
-                </li>
-              </ul>
-            </div>
+                {initiatedRecoveries.length === 0 ? (
+                  <div className="py-8 text-center">
+                    <div className="w-12 h-12 mx-auto rounded-full border-2 border-dashed border-muted-foreground/30 mb-4 flex items-center justify-center">
+                      <span className="text-muted-foreground/50 text-2xl">∅</span>
+                    </div>
+                    <p className="font-mono text-sm text-muted-foreground">
+                      No recoveries initiated from this wallet yet
+                    </p>
+                    <p className="font-mono text-xs text-muted-foreground/60 mt-2">
+                      Initiate a recovery above to see it listed here
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {initiatedRecoveries.map((recovery, index) => (
+                      <div
+                        key={recovery.deployHash}
+                        className="border border-border/20 p-4 bg-background/50"
+                      >
+                        {/* Status Header */}
+                        <div className="flex items-center justify-between mb-4">
+                          <div className="flex items-center gap-3">
+                            {/* Status Indicator Light */}
+                            <div
+                              className={`w-3 h-3 rounded-full ${recovery.deployStatus === 'pending'
+                                ? 'bg-yellow-400 animate-pulse shadow-[0_0_10px_2px_rgba(250,204,21,0.5)]'
+                                : recovery.deployStatus === 'success'
+                                  ? 'bg-green-500 animate-[glow_1.5s_ease-in-out_infinite] shadow-[0_0_12px_3px_rgba(34,197,94,0.6)]'
+                                  : 'bg-red-500 opacity-50'
+                                }`}
+                              title={`Deploy Status: ${recovery.deployStatus}`}
+                            />
+                            <span className="font-mono text-xs uppercase tracking-widest text-foreground">
+                              Recovery #{index + 1}
+                            </span>
+                          </div>
+                          <span
+                            className={`font-mono text-xs uppercase px-2 py-1 ${recovery.deployStatus === 'pending'
+                              ? 'text-yellow-400 bg-yellow-400/10'
+                              : recovery.deployStatus === 'success'
+                                ? 'text-green-500 bg-green-500/10'
+                                : 'text-red-500 bg-red-500/10'
+                              }`}
+                          >
+                            {recovery.deployStatus}
+                          </span>
+                        </div>
+
+                        {/* Recovery Details */}
+                        <div className="space-y-3">
+                          {/* Deploy Hash */}
+                          <div className="grid grid-cols-1 gap-1">
+                            <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
+                              Deploy Hash
+                            </span>
+                            <div className="flex items-center gap-2">
+                              <code className="font-mono text-xs text-foreground/80 break-all bg-muted/30 px-2 py-1 flex-1">
+                                {recovery.deployHash}
+                              </code>
+                              <button
+                                onClick={() => navigator.clipboard.writeText(recovery.deployHash)}
+                                className="font-mono text-[10px] text-accent hover:text-accent/80 transition-colors shrink-0"
+                                title="Copy to clipboard"
+                              >
+                                COPY
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Recovery ID (for guardians) */}
+                          {recovery.recoveryId && (
+                            <div className="grid grid-cols-1 gap-1">
+                              <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
+                                Recovery ID (for Guardian Approval)
+                              </span>
+                              <div className="flex items-center gap-2">
+                                <code className="font-mono text-xs text-accent break-all bg-accent/10 px-2 py-1 flex-1">
+                                  {recovery.recoveryId}
+                                </code>
+                                <button
+                                  onClick={() => navigator.clipboard.writeText(recovery.recoveryId!)}
+                                  className="font-mono text-[10px] text-accent hover:text-accent/80 transition-colors shrink-0"
+                                  title="Copy to clipboard"
+                                >
+                                  COPY
+                                </button>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Target Account */}
+                          <div className="grid grid-cols-1 gap-1">
+                            <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
+                              Target Account
+                            </span>
+                            <span className="font-mono text-xs text-foreground/70 break-all">
+                              {recovery.targetAccount}
+                            </span>
+                          </div>
+
+                          {/* Approval Status (if available) */}
+                          {recovery.approvalCount !== undefined && (
+                            <div className="flex items-center gap-4 pt-2 border-t border-border/20">
+                              <div>
+                                <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
+                                  Approvals
+                                </span>
+                                <span className="font-mono text-sm text-foreground ml-2">
+                                  {recovery.approvalCount}
+                                </span>
+                              </div>
+                              {recovery.isApproved && (
+                                <span className="font-mono text-xs text-green-500 bg-green-500/10 px-2 py-1">
+                                  ✓ THRESHOLD MET
+                                </span>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Initiated Timestamp */}
+                          <div className="pt-2 border-t border-border/20">
+                            <span className="font-mono text-[10px] text-muted-foreground/60">
+                              Initiated: {new Date(recovery.initiatedAt).toLocaleString()}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </section>
