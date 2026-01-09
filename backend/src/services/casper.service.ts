@@ -746,17 +746,48 @@ export class CasperService {
             }
 
             // Handle multiple possible response structures:
-            // 1. { CLValue: [...] } - direct CLValue
-            // 2. { stored_value: { CLValue: { data: [...] } } } - wrapped format
+            // 1. { CLValue: [...] } - direct CLValue (native array)
+            // 2. { CLValue: { data: [...], isCLValue: true } } - Casper SDK CLValue object
+            // 3. { stored_value: { CLValue: { data: [...] } } } - wrapped format
             let recoveryIdsData: any[] | undefined;
 
-            if (recoveryIdsResult?.CLValue && Array.isArray(recoveryIdsResult.CLValue)) {
-                // Direct CLValue array format
-                recoveryIdsData = recoveryIdsResult.CLValue;
-                console.log('Found recovery IDs in direct CLValue format:', recoveryIdsData);
+            if (recoveryIdsResult?.CLValue) {
+                const clValue = recoveryIdsResult.CLValue;
+                console.log('CLValue structure - isCLValue:', clValue?.isCLValue, 'hasData:', !!clValue?.data);
+
+                if (Array.isArray(clValue)) {
+                    // Direct CLValue array format
+                    recoveryIdsData = clValue;
+                    console.log('Found recovery IDs in direct CLValue array format:', recoveryIdsData);
+                } else if (typeof clValue === 'object' && clValue !== null) {
+                    // Casper SDK CLValue object - check for data property FIRST
+                    // The SDK CLValue has: { isCLValue: true, data: [...], ... }
+                    if (clValue.data !== undefined) {
+                        // CLValue has a data property - this is what we want
+                        if (Array.isArray(clValue.data)) {
+                            recoveryIdsData = clValue.data;
+                            console.log('Found recovery IDs in CLValue.data array format:', recoveryIdsData);
+                        } else {
+                            // data might be a single value or BigNumber
+                            recoveryIdsData = [clValue.data];
+                            console.log('Found single recovery ID in CLValue.data:', recoveryIdsData);
+                        }
+                    } else {
+                        // Fallback: try to find array-like data in the object
+                        // This handles edge cases where data is structured differently
+                        const values = Object.values(clValue);
+                        // Filter to find array elements (ignore boolean properties like isCLValue)
+                        const arrayValues = values.filter(v => Array.isArray(v));
+                        if (arrayValues.length > 0) {
+                            recoveryIdsData = arrayValues[0] as any[];
+                            console.log('Found recovery IDs in nested array:', recoveryIdsData);
+                        }
+                    }
+                }
             } else if (recoveryIdsResult?.stored_value?.CLValue?.data) {
                 // Wrapped format
-                recoveryIdsData = recoveryIdsResult.stored_value.CLValue.data;
+                const data = recoveryIdsResult.stored_value.CLValue.data;
+                recoveryIdsData = Array.isArray(data) ? data : [data];
                 console.log('Found recovery IDs in wrapped format:', recoveryIdsData);
             } else if (Array.isArray(recoveryIdsResult)) {
                 // Raw array format
@@ -764,20 +795,34 @@ export class CasperService {
                 console.log('Found recovery IDs as raw array:', recoveryIdsData);
             }
 
-            if (!recoveryIdsData || !Array.isArray(recoveryIdsData) || recoveryIdsData.length === 0) {
+            if (!recoveryIdsData || recoveryIdsData.length === 0) {
                 console.log('No recoveries found for this guardian - data is:', recoveryIdsData);
                 console.log('========================================\n');
                 return [];
             }
 
-            // Parse recovery IDs from U256 values
+            // Ensure it's an array for further processing
+            if (!Array.isArray(recoveryIdsData)) {
+                recoveryIdsData = Array.from(recoveryIdsData);
+            }
+
+            // Parse recovery IDs from U256 values (which may be BigNumber objects)
             const recoveryIds: string[] = recoveryIdsData.map((id: any) => {
                 if (typeof id === 'object' && id !== null) {
-                    // U256 might be stored as an object
-                    return id.toString();
+                    // Handle BigNumber objects from Casper SDK
+                    if (id.data !== undefined) {
+                        // Nested CLValue with data property
+                        return String(id.data);
+                    }
+                    if (typeof id.toString === 'function') {
+                        // BigNumber or similar object with toString
+                        return id.toString();
+                    }
                 }
                 return String(id);
             });
+
+            console.log('Parsed recovery IDs:', recoveryIds);
 
             console.log('Found recovery IDs:', recoveryIds);
 
@@ -791,35 +836,97 @@ export class CasperService {
                 alreadyApproved: boolean;
             }[] = [];
 
+            // Helper function to extract CLValue data from various response formats
+            const extractCLValueData = (result: any): any => {
+                if (!result) return undefined;
+
+                // Format 1: { stored_value: { CLValue: { data: ... } } }
+                if (result?.stored_value?.CLValue?.data !== undefined) {
+                    return result.stored_value.CLValue.data;
+                }
+                // Format 2: { CLValue: { data: ... } } - SDK CLValue object
+                if (result?.CLValue?.data !== undefined) {
+                    return result.CLValue.data;
+                }
+                // Format 3: { CLValue: { 0: ..., 1: ... } } - byte array as object
+                if (result?.CLValue && typeof result.CLValue === 'object') {
+                    const clValue = result.CLValue;
+                    // Check if it's a byte array object (has numeric keys)
+                    const keys = Object.keys(clValue);
+                    if (keys.length > 0 && keys.every(k => !isNaN(parseInt(k)))) {
+                        // Convert object with numeric keys to byte array
+                        const maxIndex = Math.max(...keys.map(k => parseInt(k)));
+                        const bytes = new Uint8Array(maxIndex + 1);
+                        for (const [key, value] of Object.entries(clValue)) {
+                            bytes[parseInt(key)] = value as number;
+                        }
+                        return bytes;
+                    }
+                    // It might be a CLValue with isCLValue property
+                    if (clValue.isCLValue && clValue.data !== undefined) {
+                        return clValue.data;
+                    }
+                    return clValue;
+                }
+                return undefined;
+            };
+
+            // Helper function to convert data to hex string
+            const toHexString = (data: any): string | null => {
+                if (!data) return null;
+                if (typeof data === 'string') return data;
+                if (data instanceof Uint8Array) return Buffer.from(data).toString('hex');
+                if (Array.isArray(data)) return Buffer.from(data).toString('hex');
+                if (typeof data === 'object' && data !== null) {
+                    // Handle BigNumber
+                    if (data._isBigNumber) {
+                        return data.toString();
+                    }
+                    // Handle byte array as object
+                    const keys = Object.keys(data);
+                    if (keys.length > 0 && keys.every(k => !isNaN(parseInt(k)))) {
+                        const maxIndex = Math.max(...keys.map(k => parseInt(k)));
+                        const bytes = new Uint8Array(maxIndex + 1);
+                        for (const [key, value] of Object.entries(data)) {
+                            bytes[parseInt(key)] = value as number;
+                        }
+                        return Buffer.from(bytes).toString('hex');
+                    }
+                    // Handle nested data
+                    if (data.data !== undefined) {
+                        return toHexString(data.data);
+                    }
+                }
+                return null;
+            };
+
             // Fetch details for each recovery ID
             for (const idStr of recoveryIds) {
                 console.log(`\n--- Fetching Recovery ${idStr} Details ---`);
 
                 // Check if recovery is finalized (skip if it is)
                 const finalizedResult = await this.queryContractDictionary(contractHash, 'd', `rf${idStr}`);
-                if (finalizedResult?.stored_value?.CLValue?.data === true) {
+                const isFinalized = extractCLValueData(finalizedResult) === true;
+                if (isFinalized) {
                     console.log('Recovery is finalized, skipping');
                     continue;
                 }
 
                 // Get target account for this recovery
                 const accResult = await this.queryContractDictionary(contractHash, 'd', `ra${idStr}`);
-                if (!accResult?.stored_value?.CLValue?.data) {
+                const targetAccountData = extractCLValueData(accResult);
+                console.log('Target account raw data:', targetAccountData);
+
+                if (!targetAccountData) {
                     console.log('Recovery account not found, skipping');
                     continue;
                 }
 
-                // Parse the AccountHash
-                const targetAccountData = accResult.stored_value.CLValue.data;
-                let targetAccountHex: string;
-                if (typeof targetAccountData === 'string') {
-                    targetAccountHex = targetAccountData;
-                } else if (Array.isArray(targetAccountData)) {
-                    targetAccountHex = Buffer.from(targetAccountData).toString('hex');
-                } else if (targetAccountData?.data) {
-                    targetAccountHex = Buffer.from(targetAccountData.data).toString('hex');
-                } else {
-                    targetAccountHex = Buffer.from(targetAccountData).toString('hex');
+                // Parse the AccountHash to hex
+                const targetAccountHex = toHexString(targetAccountData);
+                if (!targetAccountHex) {
+                    console.log('Could not parse target account to hex, skipping');
+                    continue;
                 }
 
                 const targetDebugFormat = `AccountHash(${targetAccountHex})`;
@@ -837,29 +944,58 @@ export class CasperService {
                 const approvedByGuardianResult = await this.queryContractDictionary(
                     contractHash, 'd', `rp${idStr}_${guardianDebugFormat}`
                 );
-                const alreadyApproved = approvedByGuardianResult?.stored_value?.CLValue?.data === true;
+                const alreadyApproved = extractCLValueData(approvedByGuardianResult) === true;
                 console.log('Already approved by this guardian:', alreadyApproved);
 
                 // Parse new key
-                const newKeyData = newKeyResult?.stored_value?.CLValue?.data;
-                let newKeyHex: string | null = null;
-                if (newKeyData) {
-                    if (typeof newKeyData === 'string') {
-                        newKeyHex = newKeyData;
-                    } else if (Array.isArray(newKeyData)) {
-                        newKeyHex = Buffer.from(newKeyData).toString('hex');
-                    } else if (newKeyData?.data) {
-                        newKeyHex = Buffer.from(newKeyData.data).toString('hex');
+                const newKeyData = extractCLValueData(newKeyResult);
+                const newKeyHex = toHexString(newKeyData);
+
+                // Parse approval count - handle BigNumber
+                const approvalCountData = extractCLValueData(approvalCountResult);
+                let approvalCount = 0;
+                if (approvalCountData !== undefined) {
+                    if (typeof approvalCountData === 'number') {
+                        approvalCount = approvalCountData;
+                    } else if (approvalCountData?._isBigNumber) {
+                        approvalCount = parseInt(approvalCountData.toString());
+                    } else {
+                        approvalCount = Number(approvalCountData) || 0;
                     }
                 }
+
+                // Parse threshold - handle BigNumber
+                const thresholdData = extractCLValueData(thresholdResult);
+                let threshold = 2;
+                if (thresholdData !== undefined) {
+                    if (typeof thresholdData === 'number') {
+                        threshold = thresholdData;
+                    } else if (thresholdData?._isBigNumber) {
+                        threshold = parseInt(thresholdData.toString());
+                    } else {
+                        threshold = Number(thresholdData) || 2;
+                    }
+                }
+
+                const isApproved = extractCLValueData(approvedResult) === true;
+
+                console.log('Recovery details:', {
+                    recoveryId: idStr,
+                    targetAccount: `account-hash-${targetAccountHex}`,
+                    newKey: newKeyHex,
+                    approvalCount,
+                    threshold,
+                    isApproved,
+                    alreadyApproved,
+                });
 
                 results.push({
                     recoveryId: idStr,
                     targetAccount: `account-hash-${targetAccountHex}`,
                     newKey: newKeyHex,
-                    approvalCount: Number(approvalCountResult?.stored_value?.CLValue?.data) || 0,
-                    threshold: Number(thresholdResult?.stored_value?.CLValue?.data) || 2,
-                    isApproved: approvedResult?.stored_value?.CLValue?.data === true,
+                    approvalCount,
+                    threshold,
+                    isApproved,
                     alreadyApproved,
                 });
             }
