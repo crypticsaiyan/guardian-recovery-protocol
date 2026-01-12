@@ -9,8 +9,11 @@
 
 SentinelX enables trustless account recovery through threshold-based guardianship. Designate trusted friends as guardians who can collectively help you recover access if you lose your private key.
 
-## Screenshots
+| **frontend** | https://sentinelx-3h81.onrender.com/ |
+|----------|----------|
+| **backend** | https://guardian-recovery-protocol.onrender.com |
 
+## Screenshots
 
 ![alt text](./screenshots/image.png)
 ![alt text](./screenshots/image-1.png)
@@ -94,15 +97,15 @@ SentinelX enables trustless account recovery through threshold-based guardianshi
 
 ## Tech Stack
 
-| Layer | Technology | Purpose |
-|-------|------------|---------|
-| **Frontend** | Next.js 15, React 19, TypeScript | Web application |
-| **Styling** | TailwindCSS 4, shadcn/ui, Radix UI | UI components |
-| **Backend** | Node.js, Express, TypeScript | API server |
-| **Database** | Supabase (PostgreSQL) | Data persistence |
-| **Blockchain** | casper-js-sdk | Casper integration |
-| **Contracts** | Rust, Casper SDK | On-chain logic |
-| **Email** | Nodemailer | Guardian notifications |
+| Layer          | Technology                         | Purpose                |
+| -------------- | ---------------------------------- | ---------------------- |
+| **Frontend**   | Next.js 15, React 19, TypeScript   | Web application        |
+| **Styling**    | TailwindCSS 4, shadcn/ui, Radix UI | UI components          |
+| **Backend**    | Node.js, Express, TypeScript       | API server             |
+| **Database**   | Supabase (PostgreSQL)              | Data persistence       |
+| **Blockchain** | casper-js-sdk                      | Casper integration     |
+| **Contracts**  | Rust, Casper SDK                   | On-chain logic         |
+| **Email**      | Nodemailer                         | Guardian notifications |
 
 ## Project Structure
 
@@ -168,6 +171,7 @@ npm run dev             # Runs on http://localhost:3000
 ### Environment Setup
 
 **Backend** (`backend/.env`):
+
 ```env
 CASPER_NODE_URL=https://rpc.testnet.casperlabs.io/rpc
 CASPER_CHAIN_NAME=casper-test
@@ -182,14 +186,13 @@ WASM_RECOVERY_REGISTRY_PATH
 
 ## Security
 
-| Protection | Description |
-|------------|-------------|
-| **Account Isolation** | Guardian keys are bound to specific accounts |
-| **Threshold Enforcement** | Single guardian cannot recover alone |
-| **Time-Lock** | 30-day delay before execution |
-| **Replay Prevention** | Nonce and timestamp validation |
-| **On-Chain Verification** | All signatures verified by smart contract |
-
+| Protection                | Description                                  |
+| ------------------------- | -------------------------------------------- |
+| **Account Isolation**     | Guardian keys are bound to specific accounts |
+| **Threshold Enforcement** | Single guardian cannot recover alone         |
+| **Time-Lock**             | 30-day delay before execution                |
+| **Replay Prevention**     | Nonce and timestamp validation               |
+| **On-Chain Verification** | All signatures verified by smart contract    |
 
 ## License
 
